@@ -5,7 +5,7 @@ from typing import Any
 
 from .approval import ApprovalGate
 from .memory import MemoryStore
-from .models import AgentRequest, AgentResponse, ToolCall
+from .models import AgentRequest, AgentResponse, ToolCall, ToolResult
 from .permissions import Decision, PermissionPolicy
 from .planner import Planner
 from .tools import ToolRegistry
@@ -22,10 +22,13 @@ class AgentRuntime:
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
         self.memory.add(request.conversation_id, "user", request.message, request.context)
-        plan = await self.planner.plan(request.message, request.context)
+        context = dict(request.context)
+        context["memory"] = self.memory.recent(request.conversation_id)
+        context["available_tools"] = self.tools.describe()
+        plan = await self.planner.plan(request.message, context)
         events: list[dict[str, Any]] = [{"type": "plan.created", "steps": len(plan.steps)}]
         pending: list[ToolCall] = []
-        results: list[dict[str, Any]] = []
+        results: list[ToolResult] = []
 
         for call in plan.steps:
             decision = self.policy.decide(call, approved=False)
@@ -37,23 +40,25 @@ class AgentRuntime:
                 events.append({"type": "tool.denied", "tool": call.name, "risk": call.risk.value})
                 continue
             result = await self._execute(call, events)
-            if result is not None:
-                results.append({"tool": call.name, "result": result})
+            results.append(result)
 
         if pending:
             self._pending[request.conversation_id] = pending
             reply = "I’ve got the next step ready. Want me to go ahead?"
-        elif results:
+        elif results and all(item.success for item in results):
             reply = "Done bhai. I completed the available steps."
+        elif results:
+            reply = "I finished what I could, but one or more steps need attention."
         else:
             reply = "I understood you, but there’s no configured tool for that yet."
 
-        self.memory.add(request.conversation_id, "assistant", reply, {"events": events})
+        self.memory.add(request.conversation_id, "assistant", reply, {"events": events, "results": [item.model_dump() for item in results]})
         return AgentResponse(
             conversation_id=request.conversation_id,
             reply=reply,
             plan=plan,
             pending_approval=pending,
+            results=results,
             events=events,
         )
 
@@ -76,14 +81,15 @@ class AgentRuntime:
         del calls[tool_index]
         if not calls:
             self._pending.pop(conversation_id, None)
-        self.memory.add(conversation_id, "assistant", "Done bhai.", {"events": events})
-        return {"tool": call.name, "result": result, "events": events}
+        self.memory.add(conversation_id, "assistant", "Done bhai.", {"events": events, "result": result.model_dump()})
+        return {"tool": call.name, "result": result.model_dump(), "events": events}
 
-    async def _execute(self, call: ToolCall, events: list[dict[str, Any]]) -> Any:
+    async def _execute(self, call: ToolCall, events: list[dict[str, Any]]) -> ToolResult:
         try:
-            result = await self.tools.get(call).run(call.arguments)
+            tool = self.tools.get(call)
+            result = await tool.run(call.arguments)
             events.append({"type": "tool.completed", "tool": call.name})
-            return result
-        except Exception as exc:
+            return ToolResult(tool=call.name, success=True, output=result)
+        except Exception as exc:  # noqa: BLE001 - tool adapters are untrusted plugin boundaries
             events.append({"type": "tool.failed", "tool": call.name, "error": str(exc)})
-            return None
+            return ToolResult(tool=call.name, success=False, error=str(exc))
