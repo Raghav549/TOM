@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 from .fusion import FusedTarget
 from .multimodal_observation import UiNode
@@ -22,9 +23,17 @@ class GroundedActionPlanner:
     It never executes the action and never derives the user's goal from screen text.
     """
 
-    CONSEQUENT = {"send_message", "send_email", "purchase", "payment", "delete", "account_change", "share_sensitive_data"}
+    CONSEQUENT: ClassVar[frozenset[str]] = frozenset({
+        "send_message", "send_email", "purchase", "payment", "delete", "account_change", "share_sensitive_data",
+    })
 
-    def choose_tap(self, intent: str, targets: list[FusedTarget], nodes: tuple[UiNode, ...], threshold: float = 0.72) -> GroundedActionPlan | None:
+    def choose_tap(
+        self,
+        intent: str,
+        targets: list[FusedTarget],
+        nodes: tuple[UiNode, ...],
+        threshold: float = 0.72,
+    ) -> GroundedActionPlan | None:
         del intent  # the caller's trusted intent is used for candidate generation
         for target in targets:
             if target.fused_score < threshold or not target.node_id or not target.bounds:
