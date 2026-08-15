@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -51,6 +53,9 @@ class VoiceStyle(BaseModel):
     laugh_probability: float = Field(default=0.0, ge=0.0, le=1.0)
     backchannel: bool = False
     style_reason: str = ""
+    # Adapter-facing expressive controls. Concrete TTS engines may map these
+    # to native pitch/energy/rate controls, style tokens, or acoustic prompts.
+    prosody_plan: dict[str, Any] = Field(default_factory=dict)
 
 
 VOICE_PROFILES: dict[str, VoiceProfile] = {
