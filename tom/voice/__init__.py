@@ -5,6 +5,8 @@ voice identity, expressive prosody, turn-taking, and synthesis. A model
 adapter must be installed/configured; there is no fake audio fallback.
 """
 
+from .asr import FasterWhisperASR
+from .cosyvoice_stream import CosyVoiceStreamingAdapter, TTSChunk
 from .director import VoiceDirector
 from .engine import SpeechEngine, SpeechEngineConfig
 from .models import Emotion, Language, VoiceProfile, VoiceStyle
@@ -25,4 +27,7 @@ __all__ = [
     "DuplexTurnManager",
     "TurnDecision",
     "TurnSignal",
+    "FasterWhisperASR",
+    "CosyVoiceStreamingAdapter",
+    "TTSChunk",
 ]
