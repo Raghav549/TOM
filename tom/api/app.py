@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from tom.approval import ApprovalGate
@@ -8,14 +8,21 @@ from tom.companion import CompanionProfile
 from tom.config import settings
 from tom.memory import MemoryStore
 from tom.models import AgentRequest
+from tom.permissions import PermissionPolicy
 from tom.planner import RulePlanner
 from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry
 from tom.voice import VOICES
 
-app = FastAPI(title="TOM Agent Runtime", version="0.2.0")
+app = FastAPI(title="TOM Agent Runtime", version="0.3.0")
 profile = CompanionProfile()
-runtime = AgentRuntime(RulePlanner(), ToolRegistry({}), MemoryStore(str(settings.data_dir)), ApprovalGate(settings.approval_required))
+runtime = AgentRuntime(
+    RulePlanner(),
+    ToolRegistry({}),
+    MemoryStore(str(settings.data_dir)),
+    ApprovalGate(settings.approval_required),
+    PermissionPolicy(),
+)
 
 
 class ProfileUpdate(BaseModel):
@@ -26,9 +33,14 @@ class ProfileUpdate(BaseModel):
     commentary_enabled: bool | None = None
 
 
+class ApprovalRequest(BaseModel):
+    conversation_id: str
+    tool_index: int
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "tom", "version": "0.2.0"}
+    return {"status": "ok", "service": "tom", "version": "0.3.0"}
 
 
 @app.get("/v1/capabilities")
@@ -71,6 +83,21 @@ async def update_profile(update: ProfileUpdate) -> dict:
 @app.post("/v1/agent")
 async def agent(request: AgentRequest):
     return await runtime.handle(request)
+
+
+@app.get("/v1/approvals/{conversation_id}")
+async def pending_approvals(conversation_id: str):
+    return {"conversation_id": conversation_id, "items": runtime.pending(conversation_id)}
+
+
+@app.post("/v1/approval")
+async def approve(request: ApprovalRequest):
+    try:
+        return await runtime.approve_and_execute(request.conversation_id, request.tool_index)
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (PermissionError, RuntimeError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 @app.get("/v1/memory/{conversation_id}")
