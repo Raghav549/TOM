@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from uuid import uuid4
 from urllib.parse import quote_plus
+from uuid import uuid4
 
 from .api.bridge_server import AndroidBridgeHub
 from .models import Risk
@@ -26,17 +26,9 @@ class AndroidDeviceTool:
         approval = arguments.get("approval_token")
         action_arguments = {key: value for key, value in arguments.items() if key not in {"device_id", "task_id", "approval_token"}}
         action_arguments = self._normalize(action_arguments)
-
-        result = await self.hub.request_action(
-            device_id=device_id,
-            task_id=task_id,
-            action=self.action,
-            arguments=action_arguments,
-            approval_token=str(approval) if approval else None,
-        )
+        result = await self.hub.request_action(device_id=device_id, task_id=task_id, action=self.action, arguments=action_arguments, approval_token=str(approval) if approval else None)
         if not result.get("accepted") or result.get("status") != "completed":
             return {"ok": False, "action": self.action, "result": result}
-
         observation = await self.hub.request_observation(device_id, task_id, str(result.get("action_id")), timeout=8.0)
         if observation is None:
             return {"ok": False, "action": self.action, "result": result, "verification": None, "error": "post_action_observation_timeout"}
@@ -54,11 +46,14 @@ class AndroidDeviceTool:
 def register_android_tools(registry: ToolRegistry, hub: AndroidBridgeHub) -> None:
     specs = [
         ("device_open_app", "Open a real Android app by package name.", "open_app", Risk.LOW),
+        ("device_open_app_name", "Open an installed Android app by its visible name.", "open_app_name", Risk.LOW),
         ("device_open_url", "Open a real website URL in the device browser.", "open_url", Risk.LOW),
         ("device_search_google", "Open Google search with a user query.", "search_google", Risk.LOW),
         ("device_tap", "Tap a grounded screen coordinate.", "tap", Risk.LOW),
         ("device_tap_node", "Click a grounded accessibility node.", "tap_node", Risk.LOW),
+        ("device_tap_target", "Find and click a visible accessibility target by text, description or view id.", "tap_target", Risk.LOW),
         ("device_type", "Type into a grounded editable accessibility node.", "set_text_node", Risk.LOW),
+        ("device_type_target", "Find a visible editable target and type into it.", "set_text_target", Risk.LOW),
         ("device_swipe", "Swipe between grounded screen coordinates.", "swipe", Risk.LOW),
         ("device_long_press", "Long-press a grounded screen coordinate.", "long_press", Risk.LOW),
         ("device_long_click_node", "Long-click a grounded accessibility node.", "long_click_node", Risk.LOW),
