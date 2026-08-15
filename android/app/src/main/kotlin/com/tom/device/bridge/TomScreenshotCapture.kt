@@ -32,7 +32,7 @@ class TomScreenshotCapture(private val service: AccessibilityService) {
         service.takeScreenshot(
             AccessibilityService.SCREENSHOT_DISPLAY,
             service.mainExecutor,
-            object : AccessibilityService.TakeScreenshotCallback() {
+            object : AccessibilityService.TakeScreenshotCallback {
                 override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
                     val bitmap = Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
                     if (bitmap == null) {
