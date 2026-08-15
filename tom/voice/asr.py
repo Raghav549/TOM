@@ -6,11 +6,7 @@ import wave
 
 
 class FasterWhisperASR:
-    """Real local ASR adapter for completed voice turns.
-
-    Uses faster-whisper when installed. The model is loaded lazily so TOM's
-    normal text runtime does not pay the GPU/model startup cost.
-    """
+    """Real local ASR adapter for completed voice turns."""
 
     def __init__(self) -> None:
         self.model_name = os.getenv("TOM_ASR_MODEL", "small")
@@ -39,14 +35,14 @@ class FasterWhisperASR:
 
     @staticmethod
     def _wav(pcm16: bytes, sample_rate: int) -> str:
-        handle = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        handle.close()
-        with wave.open(handle.name, "wb") as out:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            path = handle.name
+        with wave.open(path, "wb") as out:
             out.setnchannels(1)
             out.setsampwidth(2)
             out.setframerate(sample_rate)
             out.writeframes(pcm16)
-        return handle.name
+        return path
 
     def transcribe(self, pcm16: bytes, sample_rate: int = 16000) -> tuple[str, float, str | None]:
         if not pcm16:
