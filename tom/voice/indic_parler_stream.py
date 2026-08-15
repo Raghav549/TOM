@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import ClassVar
 
-from .models import Language, VoiceProfile, VoiceStyle
 from .cosyvoice_stream import TTSChunk
+from .models import Language, VoiceProfile, VoiceStyle
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,7 @@ class IndicParlerStreamingAdapter:
     MODEL_ID = os.getenv("TOM_INDIC_PARLER_MODEL", "ai4bharat/indic-parler-tts")
     SAMPLE_RATE = 24_000
 
-    VOICES = {
+    VOICES: ClassVar[dict[str, IndicParlerVoice]] = {
         "tom_m1": IndicParlerVoice("Rohit", "male"),
         "tom_m2": IndicParlerVoice("Aman", "male"),
         "tom_f1": IndicParlerVoice("Divya", "female"),
