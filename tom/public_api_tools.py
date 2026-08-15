@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from .credentials import CredentialManager
+from .google_oauth import GoogleOAuth
 from .integration_tools import register_integration_tools
 from .models import Risk
 from .tools import ToolRegistry
@@ -255,8 +256,8 @@ class MailboxlayerTool:
         return await _get("https://apilayer.net/api/check", params={"access_key": _credential(self.credentials, "mailboxlayer", "api_key", "TOM_MAILBOXLAYER_KEY"), "email": email})
 
 
-def register_public_api_tools(registry: ToolRegistry, credentials: CredentialManager | None = None) -> None:
+def register_public_api_tools(registry: ToolRegistry, credentials: CredentialManager | None = None) -> GoogleOAuth:
     credentials = credentials or CredentialManager(__import__("tom.config", fromlist=["settings"]).settings.data_dir)
     for tool in (OpenMeteoWeatherTool(), NominatimGeocodeTool(), FrankfurterCurrencyTool(), NagerHolidayTool(), RestCountriesTool(), OpenLibraryBooksTool(), WorldTimeTool(), HackerNewsTool(), CoinGeckoPriceTool(), GitHubSearchTool(), SpaceXLaunchTool(), CatFactTool(), DogImageTool(), AviationstackTool(credentials), MarketstackTool(credentials), SerpstackTool(credentials), MailboxlayerTool(credentials)):
         registry.register(tool)
-    register_integration_tools(registry, credentials)
+    return register_integration_tools(registry, credentials)
