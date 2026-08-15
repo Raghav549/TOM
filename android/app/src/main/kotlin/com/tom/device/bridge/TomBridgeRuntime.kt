@@ -117,6 +117,9 @@ class TomBridgeRuntime(
             action = action,
             targetNodeId = args.optString("node_id").takeIf { it.isNotBlank() },
             text = args.optString("text").takeIf { it.isNotBlank() },
+            recipient = args.optString("recipient").takeIf { it.isNotBlank() },
+            subject = args.optString("subject").takeIf { it.isNotBlank() },
+            body = args.optString("body").takeIf { it.isNotBlank() },
             url = args.optString("url").takeIf { it.isNotBlank() },
             packageName = args.optString("package_name").takeIf { it.isNotBlank() },
             intentUri = args.optString("intent_uri").takeIf { it.isNotBlank() },
@@ -127,6 +130,9 @@ class TomBridgeRuntime(
             endY = if (args.has("y2")) args.optDouble("y2").toFloat() else null,
             durationMs = args.optLong("duration_ms", 450L),
             longPressMs = args.optLong("long_press_ms", 650L),
+            startMillis = if (args.has("start_millis")) args.optLong("start_millis") else null,
+            endMillis = if (args.has("end_millis")) args.optLong("end_millis") else null,
+            location = args.optString("location").takeIf { it.isNotBlank() },
         )
 
         val result = actionExecutor.execute(request)
@@ -177,6 +183,7 @@ class TomBridgeRuntime(
         private val CONSEQUENT_ACTIONS = setOf(
             "send_message", "send_email", "send_sms", "send_form", "purchase", "payment", "book",
             "cancel_booking", "delete", "account_change", "publish", "share_sensitive_data", "compose_email", "compose_sms",
+            "create_calendar_event",
         )
     }
 }
