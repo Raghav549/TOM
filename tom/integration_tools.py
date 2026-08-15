@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from .credentials import CredentialManager, env_credential
+from .credentials import CredentialManager
 from .google_oauth import GoogleOAuth
 from .models import Risk
 from .tools import ToolRegistry
@@ -16,18 +16,9 @@ TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 USER_AGENT = "TOM-Agent/2.0"
 
 
-async def _request(
-    method: str,
-    url: str,
-    *,
-    params: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
-    json: dict[str, Any] | None = None,
-    data: dict[str, Any] | None = None,
-    auth: tuple[str, str] | None = None,
-) -> Any:
+async def _request(method: str, url: str, *, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None, json: dict[str, Any] | None = None, data: dict[str, Any] | None = None, auth: tuple[str, str] | None = None) -> Any:
     merged = {"User-Agent": USER_AGENT, **(headers or {})}
-    async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False, headers=merged) as client:
+    async with httpx.AsyncClient(timeout=TIMEOUT, follow_redirects=False) as client:
         response = await client.request(method, url, params=params, headers=merged, json=json, data=data, auth=auth)
         response.raise_for_status()
         if not response.content:
@@ -53,15 +44,11 @@ class GoogleCalendarListTool:
         if self.oauth is None:
             raise RuntimeError("Google OAuth is not initialized")
         token = await self.oauth.access_token()
-        params = {
-            "calendarId": str(arguments.get("calendar_id", "primary")),
-            "maxResults": max(1, min(50, int(arguments.get("max_results", 10)))),
-            "singleEvents": "true",
-            "orderBy": "startTime",
-        }
+        calendar_id = str(arguments.get("calendar_id", "primary"))
+        params: dict[str, Any] = {"maxResults": max(1, min(50, int(arguments.get("max_results", 10)))), "singleEvents": "true", "orderBy": "startTime"}
         if arguments.get("time_min"):
             params["timeMin"] = str(arguments["time_min"])
-        return await _request("GET", "https://www.googleapis.com/calendar/v3/calendars/events", params=params, headers={"Authorization": f"Bearer {token}"})
+        return await _request("GET", f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events", params=params, headers={"Authorization": f"Bearer {token}"})
 
 
 @dataclass
@@ -75,20 +62,13 @@ class GoogleCalendarCreateTool:
         if self.oauth is None:
             raise RuntimeError("Google OAuth is not initialized")
         token = await self.oauth.access_token()
-        summary = str(arguments["summary"]).strip()
-        start = str(arguments["start"]).strip()
-        end = str(arguments["end"]).strip()
+        summary, start, end = str(arguments["summary"]).strip(), str(arguments["start"]).strip(), str(arguments["end"]).strip()
         if not summary or not start or not end:
             raise ValueError("summary, start and end are required")
-        body: dict[str, Any] = {
-            "summary": summary,
-            "start": {"dateTime": start},
-            "end": {"dateTime": end},
-        }
-        if arguments.get("description"):
-            body["description"] = str(arguments["description"])
-        if arguments.get("location"):
-            body["location"] = str(arguments["location"])
+        body: dict[str, Any] = {"summary": summary, "start": {"dateTime": start}, "end": {"dateTime": end}}
+        for field in ("description", "location"):
+            if arguments.get(field):
+                body[field] = str(arguments[field])
         if arguments.get("attendees"):
             body["attendees"] = [{"email": str(email)} for email in arguments["attendees"]]
         calendar_id = str(arguments.get("calendar_id", "primary"))
@@ -127,9 +107,7 @@ class GmailSendTool:
         if self.oauth is None:
             raise RuntimeError("Google OAuth is not initialized")
         token = await self.oauth.access_token()
-        to = str(arguments["to"]).strip()
-        subject = str(arguments.get("subject", "")).strip()
-        body = str(arguments["body"])
+        to, subject, body = str(arguments["to"]).strip(), str(arguments.get("subject", "")).strip(), str(arguments["body"])
         if not to or not body:
             raise ValueError("to and body are required")
         raw = f"To: {to}\r\nSubject: {subject}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n{body}"
@@ -150,21 +128,15 @@ class GooglePlacesSearchTool:
             raise ValueError("query is required")
         body: dict[str, Any] = {"textQuery": query, "pageSize": max(1, min(20, int(arguments.get("limit", 10))))}
         if arguments.get("latitude") is not None and arguments.get("longitude") is not None:
-            lat, lon = float(arguments["latitude"]), float(arguments["longitude"])
-            body["locationBias"] = {"circle": {"center": {"latitude": lat, "longitude": lon}, "radius": float(arguments.get("radius_m", 5000))}}
-        return await _request(
-            "POST",
-            "https://places.googleapis.com/v1/places:searchText",
-            headers={"X-Goog-Api-Key": key, "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.websiteUri"},
-            json=body,
-        )
+            body["locationBias"] = {"circle": {"center": {"latitude": float(arguments["latitude"]), "longitude": float(arguments["longitude"])}, "radius": float(arguments.get("radius_m", 5000))}}
+        return await _request("POST", "https://places.googleapis.com/v1/places:searchText", headers={"X-Goog-Api-Key": key, "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.websiteUri"}, json=body)
 
 
 @dataclass
 class GoogleRoutesTool:
     name: str = "maps.route"
     risk: Risk = Risk.READ
-    description: str = "Calculate a driving/walking/bicycling route using Google Routes."
+    description: str = "Calculate a driving, walking or bicycling route using Google Routes."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
         key = _key("TOM_GOOGLE_MAPS_API_KEY")
@@ -173,12 +145,7 @@ class GoogleRoutesTool:
         mode = str(arguments.get("travel_mode", "DRIVE")).upper()
         if mode not in {"DRIVE", "WALK", "BICYCLE", "TWO_WHEELER"}:
             raise ValueError("unsupported travel mode")
-        return await _request(
-            "POST",
-            "https://routes.googleapis.com/directions/v2:computeRoutes",
-            headers={"X-Goog-Api-Key": key, "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.legs.steps.navigationInstruction"},
-            json={"origin": origin, "destination": destination, "travelMode": mode},
-        )
+        return await _request("POST", "https://routes.googleapis.com/directions/v2:computeRoutes", headers={"X-Goog-Api-Key": key, "X-Goog-FieldMask": "routes.duration,routes.distanceMeters,routes.legs.steps.navigationInstruction"}, json={"origin": origin, "destination": destination, "travelMode": mode})
 
 
 @dataclass
@@ -188,11 +155,8 @@ class TwilioSmsTool:
     description: str = "Send an SMS through Twilio after explicit TOM approval."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        sid = _key("TOM_TWILIO_ACCOUNT_SID")
-        token = _key("TOM_TWILIO_AUTH_TOKEN")
-        from_number = _key("TOM_TWILIO_FROM_NUMBER")
-        to = str(arguments["to"]).strip()
-        body = str(arguments["body"]).strip()
+        sid, token, from_number = _key("TOM_TWILIO_ACCOUNT_SID"), _key("TOM_TWILIO_AUTH_TOKEN"), _key("TOM_TWILIO_FROM_NUMBER")
+        to, body = str(arguments["to"]).strip(), str(arguments["body"]).strip()
         if not to or not body:
             raise ValueError("to and body are required")
         return await _request("POST", f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json", data={"From": from_number, "To": to, "Body": body}, auth=(sid, token))
@@ -200,14 +164,6 @@ class TwilioSmsTool:
 
 def register_integration_tools(registry: ToolRegistry, credentials: CredentialManager) -> GoogleOAuth:
     oauth = GoogleOAuth(credentials)
-    for tool in (
-        GoogleCalendarListTool(oauth=oauth),
-        GoogleCalendarCreateTool(oauth=oauth),
-        GmailSearchTool(oauth=oauth),
-        GmailSendTool(oauth=oauth),
-        GooglePlacesSearchTool(),
-        GoogleRoutesTool(),
-        TwilioSmsTool(),
-    ):
+    for tool in (GoogleCalendarListTool(oauth=oauth), GoogleCalendarCreateTool(oauth=oauth), GmailSearchTool(oauth=oauth), GmailSendTool(oauth=oauth), GooglePlacesSearchTool(), GoogleRoutesTool(), TwilioSmsTool()):
         registry.register(tool)
     return oauth
