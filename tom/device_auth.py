@@ -2,26 +2,54 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 from dataclasses import dataclass, field
 
 
 @dataclass
 class DeviceAuthenticator:
-    """Small trust anchor for the live bridge.
+    """Trust anchor for the live bridge.
 
-    Device enrollment should provision the secret out-of-band. The WebSocket
-    handshake carries only a proof derived from that secret; the raw secret is
-    never transmitted.
+    Device enrollment is provisioned out-of-band through TOM_DEVICE_SECRETS_JSON.
+    The WebSocket handshake carries only an HMAC proof; the raw secret is never
+    transmitted or logged.
     """
 
     _secrets: dict[str, bytes] = field(default_factory=dict)
     _revoked: set[str] = field(default_factory=set)
 
+    def __post_init__(self) -> None:
+        raw = os.getenv("TOM_DEVICE_SECRETS_JSON", "").strip()
+        if not raw:
+            return
+        try:
+            values = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("TOM_DEVICE_SECRETS_JSON must contain valid JSON") from exc
+        if not isinstance(values, dict):
+            raise RuntimeError("TOM_DEVICE_SECRETS_JSON must be an object mapping device IDs to secrets")
+        for device_id, encoded in values.items():
+            if not isinstance(device_id, str) or not isinstance(encoded, str) or not encoded:
+                raise RuntimeError("device secrets must map non-empty device IDs to non-empty strings")
+            # Secrets may be stored as raw UTF-8 for local testing or base64 for deployment.
+            try:
+                import base64
+                secret = base64.b64decode(encoded, validate=True)
+                if len(secret) < 32:
+                    raise ValueError
+            except Exception:
+                secret = encoded.encode("utf-8")
+            if len(secret) < 32:
+                raise RuntimeError(f"device secret for {device_id!r} must be at least 32 bytes")
+            self._secrets[device_id] = secret
+
     def enroll(self, device_id: str, secret: bytes | None = None) -> bytes:
         if not device_id:
             raise ValueError("device_id is required")
         value = secret or os.urandom(32)
+        if len(value) < 32:
+            raise ValueError("device secret must be at least 32 bytes")
         self._secrets[device_id] = value
         self._revoked.discard(device_id)
         return value
