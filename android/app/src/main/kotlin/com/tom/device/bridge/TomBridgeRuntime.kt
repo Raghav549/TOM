@@ -14,13 +14,21 @@ class TomBridgeRuntime(
     private val service: TomAccessibilityService,
 ) : TomWebSocketClient.Listener {
     private val sequence = AtomicLong(0)
-    private var client: TomWebSocketClient? = null
+    @Volatile private var client: TomWebSocketClient? = null
     private val screenshotCapture = TomScreenshotCapture(service)
     private val screenshotChunker = TomScreenshotChunker()
 
     fun connect() {
+        client?.close("reconnect")
         client = TomWebSocketClient(endpoint, deviceId, sharedSecret, this).also { it.connect() }
     }
+
+    fun disconnect() {
+        client?.close("client_disconnect")
+        client = null
+    }
+
+    fun isConnected(): Boolean = client?.isOpen() == true
 
     override fun onConnected() = Unit
 
@@ -32,7 +40,7 @@ class TomBridgeRuntime(
                 "action_request" -> handleAction(envelope)
                 "screenshot_request" -> captureScreenshot(envelope)
                 "ping" -> sendEnvelope("pong", JSONObject())
-                "revoke" -> client?.close("revoked")
+                "revoke" -> disconnect()
                 else -> Log.d("TOM", "ignored bridge message")
             }
         } catch (t: Throwable) {
@@ -41,6 +49,7 @@ class TomBridgeRuntime(
     }
 
     fun sendObservation(snapshot: String) {
+        if (!isConnected()) return
         sendEnvelope("observation", JSONObject().apply {
             put("snapshot", JSONObject(snapshot))
             put("source", "android_accessibility")
