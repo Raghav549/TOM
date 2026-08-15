@@ -24,16 +24,11 @@ class ConversationSignals:
 
 
 class VoiceDirector:
-    """Maps conversational context to controllable prosody.
+    """Maps conversational context to controllable prosody."""
 
-    This is intentionally deterministic and auditable. A future learned emotion
-    model can provide richer signals without allowing it to directly control
-    safety-critical actions.
-    """
-
-    _hinglish = re.compile(r"\b(bhai|yaar|acha|accha|haan|nahi|matlab|chalo|dekho)\b", re.I)
-    _happy = re.compile(r"\b(great|awesome|yay|nice|mast|sahi|wah|haha|lol)\b", re.I)
-    _sad = re.compile(r"\b(sad|upset|hurt|dukhi|pareshan|rona|ro raha|ro rahi)\b", re.I)
+    _hinglish = re.compile(r"\b(bhai|yaar|acha|accha|haan|nahi|matlab|chalo|dekho)\b", re.IGNORECASE)
+    _happy = re.compile(r"\b(great|awesome|yay|nice|mast|sahi|wah|haha|lol)\b", re.IGNORECASE)
+    _sad = re.compile(r"\b(sad|upset|hurt|dukhi|pareshan|rona|ro raha|ro rahi)\b", re.IGNORECASE)
 
     def detect_language(self, text: str) -> Language:
         if not text.strip():
@@ -54,69 +49,25 @@ class VoiceDirector:
     def direct(self, signals: ConversationSignals) -> VoiceStyle:
         text = signals.user_text
         if signals.task_failed or "error" in signals.situation.lower():
-            return VoiceStyle(
-                emotion=Emotion.CONCERNED,
-                intensity=0.48,
-                speaking_rate=0.96,
-                warmth=0.7,
-                pause_scale=1.12,
-                style_reason="task failure: slower, warm, solution-focused delivery",
-            )
+            return VoiceStyle(emotion=Emotion.CONCERNED, intensity=0.48, speaking_rate=0.96, warmth=0.7,
+                              pause_scale=1.12, style_reason="task failure: slower, warm, solution-focused delivery")
         if signals.task_succeeded:
-            return VoiceStyle(
-                emotion=Emotion.HAPPY,
-                intensity=0.58,
-                speaking_rate=1.04,
-                warmth=0.78,
-                laugh_probability=0.08,
-                style_reason="task success: brief natural positive lift",
-            )
+            return VoiceStyle(emotion=Emotion.HAPPY, intensity=0.58, speaking_rate=1.04, warmth=0.78,
+                              laugh_probability=0.08, style_reason="task success: brief natural positive lift")
         if signals.user_is_sad or self._sad.search(text):
-            return VoiceStyle(
-                emotion=Emotion.EMPATHETIC,
-                intensity=0.35,
-                speaking_rate=0.90,
-                warmth=0.9,
-                pause_scale=1.25,
-                style_reason="sadness cue: calm empathetic delivery",
-            )
+            return VoiceStyle(emotion=Emotion.EMPATHETIC, intensity=0.35, speaking_rate=0.90, warmth=0.9,
+                              pause_scale=1.25, style_reason="sadness cue: calm empathetic delivery")
         if signals.user_is_excited or self._happy.search(text):
-            return VoiceStyle(
-                emotion=Emotion.AMUSED,
-                intensity=0.62,
-                speaking_rate=1.08,
-                warmth=0.78,
-                style_reason="positive cue: energetic but restrained delivery",
-            )
+            return VoiceStyle(emotion=Emotion.AMUSED, intensity=0.62, speaking_rate=1.08, warmth=0.78,
+                              style_reason="positive cue: energetic but restrained delivery")
         if signals.urgency >= 0.8:
-            return VoiceStyle(
-                emotion=Emotion.SERIOUS,
-                intensity=0.55,
-                speaking_rate=1.08,
-                pause_scale=0.82,
-                style_reason="high urgency: concise delivery",
-            )
+            return VoiceStyle(emotion=Emotion.SERIOUS, intensity=0.55, speaking_rate=1.08, pause_scale=0.82,
+                              style_reason="high urgency: concise delivery")
         if signals.task_running:
-            return VoiceStyle(
-                emotion=Emotion.WARM,
-                intensity=0.32,
-                speaking_rate=0.98,
-                warmth=0.8,
-                backchannel=True,
-                style_reason="long-running task: short natural progress commentary",
-            )
+            return VoiceStyle(emotion=Emotion.WARM, intensity=0.32, speaking_rate=0.98, warmth=0.8,
+                              backchannel=True, style_reason="long-running task: short natural progress commentary")
         if signals.is_interruption:
-            return VoiceStyle(
-                emotion=Emotion.CALM,
-                intensity=0.25,
-                speaking_rate=1.0,
-                pause_scale=0.8,
-                style_reason="interruption: fast turn handoff",
-            )
-        return VoiceStyle(
-            emotion=Emotion.WARM,
-            intensity=0.4,
-            speaking_rate=1.0,
-            warmth=0.65,
-            style_reason="default companion delivery",
-        )
+            return VoiceStyle(emotion=Emotion.CALM, intensity=0.25, speaking_rate=1.0, pause_scale=0.8,
+                              style_reason="interruption: fast turn handoff")
+        return VoiceStyle(emotion=Emotion.WARM, intensity=0.4, speaking_rate=1.0, warmth=0.65,
+                          style_reason="default companion delivery")
