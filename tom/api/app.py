@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from tom.android_tools import register_android_tools
@@ -13,13 +13,16 @@ from tom.api.voice_ws import build_live_voice_websocket
 from tom.approval import ApprovalGate
 from tom.companion import CompanionProfile
 from tom.config import settings
+from tom.device.core_receiver import CoreBridgeReceiver
 from tom.device_auth import DeviceAuthenticator
 from tom.device_capabilities import DeviceCapabilityRegistry
+from tom.live_events import LiveEventStream
+from tom.live_task_bridge import LiveTaskBridge
 from tom.memory import MemoryStore
 from tom.models import AgentRequest
 from tom.perception.pipeline import MultimodalRuntime
 from tom.perception.vision_runtime import OpenAICompatibleVisionAdapter, VisionRuntimeConfig
-from tom.permissions import PermissionPolicy
+from tom.permissions import PermissionPolicy, Decision
 from tom.planner import ModelPlanner, RulePlanner
 from tom.providers import OpenAICompatibleLLM
 from tom.public_api_tools import register_public_api_tools
@@ -50,8 +53,10 @@ runtime = AgentRuntime(planner, tools, MemoryStore(str(settings.data_dir)), Appr
 device_auth = DeviceAuthenticator()
 app.state.tom_device_auth = device_auth
 app.state.tom_bridge_events = asyncio.Queue(maxsize=512)
-android_bridge = install_android_bridge(app)
-register_android_tools(tools, android_bridge)
+live_events = LiveEventStream()
+app.state.tom_live_events = live_events
+live_tasks = LiveTaskBridge(planner, runtime.events_bus)
+
 register_public_api_tools(tools)
 
 vision_base_url = os.getenv("TOM_VISION_BASE_URL", "").strip()
@@ -60,6 +65,46 @@ vision_key = os.getenv("TOM_VISION_API_KEY", "")
 vision_runtime = None
 if vision_base_url and vision_model:
     vision_runtime = MultimodalRuntime(OpenAICompatibleVisionAdapter(VisionRuntimeConfig(vision_base_url, vision_key, vision_model)))
+
+
+async def on_core_result(result: dict) -> None:
+    task_id = str(result.get("task_id") or "")
+    if task_id:
+        await live_events.publish("verification.result", result, task_id=task_id)
+        task_state = runtime.task_state(task_id) or {}
+        goal = str(task_state.get("goal") or "")
+        device_id = str(result.get("device_id") or task_state.get("device_id") or "")
+        if goal and device_id:
+            live_tasks.bind(task_id, goal, device_id)
+        bound = live_tasks.tasks.get(task_id)
+        if bound:
+            replanned = await live_tasks.on_verification(result, tools.describe())
+            if replanned is not None:
+                await live_events.publish(
+                    "plan.replanned",
+                    {"steps": len(replanned.steps), "goal": replanned.goal, "reason": "multimodal_verification_failed"},
+                    task_id=task_id,
+                )
+                # Dispatch only the first newly grounded, policy-allowed device step.
+                for step in replanned.steps:
+                    if not step.name.startswith("device_"):
+                        continue
+                    if runtime.policy.decide(step, approved=False) is not Decision.ALLOW:
+                        await live_events.publish(
+                            "replan.blocked",
+                            {"tool": step.name, "reason": "policy_or_approval_required"},
+                            task_id=task_id,
+                        )
+                        break
+                    context = {"device_id": bound.device_id, "available_tools": tools.describe()}
+                    await runtime._execute(step, [], context=context, conversation_id=task_id)
+                    break
+
+
+core_receiver = CoreBridgeReceiver(vision_runtime, on_result=on_core_result) if vision_runtime is not None else None
+android_bridge = install_android_bridge(app, event_stream=live_events, core_receiver=core_receiver)
+register_android_tools(tools, android_bridge)
+
 if vision_runtime is not None:
     app.include_router(build_device_websocket(vision_runtime))
 
@@ -102,13 +147,12 @@ async def capabilities() -> dict:
     return {
         "core": [
             "planning", "structured_tool_calls", "tool_discovery", "execution_verification", "memory", "approval",
-            "event_stream", "natural_response", "device_capability_discovery", "android_websocket_bridge",
+            "event_stream", "core_task_event_stream", "natural_response", "device_capability_discovery", "android_websocket_bridge",
             "real_android_action_tools", "correlated_post_action_verification", "real_public_api_tools",
             "multimodal_perception", "screenshot_chunk_reassembly", "semantic_visual_fusion",
-            "screen_state_fingerprinting", "screen_change_detection", "ocr_fallback_contract",
-            "live_full_duplex_voice", "android_continuous_pcm_stream", "neural_vad", "streaming_asr",
-            "partial_transcripts", "learned_turn_prediction", "continuous_prosody_state",
-            "voice_barge_in", "partial_tts_cancellation", "streaming_tts",
+            "screen_state_fingerprinting", "screen_change_detection", "multimodal_action_verification", "live_re_grounding", "live_replanning",
+            "ocr_fallback_contract", "live_full_duplex_voice", "android_continuous_pcm_stream", "neural_vad", "streaming_asr",
+            "partial_transcripts", "learned_turn_prediction", "continuous_prosody_state", "voice_barge_in", "partial_tts_cancellation", "streaming_tts",
         ],
         "model_runtime": settings.llm_enabled,
         "vision_runtime": vision_runtime is not None,
@@ -124,6 +168,29 @@ async def capabilities() -> dict:
         "tools": tools.describe(),
         "note": "Only configured adapters are executable; TOM never simulates unavailable capabilities.",
     }
+
+
+@app.websocket("/v1/events/ws")
+async def live_events_websocket(websocket: WebSocket) -> None:
+    await websocket.accept()
+    task_id = websocket.query_params.get("task_id")
+    try:
+        after = int(websocket.query_params.get("after", "0"))
+    except ValueError:
+        after = 0
+    queue, replay = await live_events.subscribe(task_id=task_id, after=after)
+    try:
+        for event in replay:
+            await websocket.send_json(event.as_dict())
+        while True:
+            event = await queue.get()
+            if task_id and event.task_id not in {None, task_id}:
+                continue
+            await websocket.send_json(event.as_dict())
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await live_events.unsubscribe(queue)
 
 
 @app.post("/v1/voice/synthesize")
@@ -150,6 +217,14 @@ async def device_sessions() -> dict:
     return {"connected_devices": sorted(android_bridge.sessions)}
 
 
+@app.get("/v1/tasks/{task_id}")
+async def task_state(task_id: str) -> dict:
+    state = runtime.task_state(task_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return state
+
+
 @app.get("/v1/profile")
 async def get_profile() -> dict:
     return {"name": profile.name, "interests": sorted(profile.interests), "style": profile.style, "language": profile.language, "commentary_enabled": profile.commentary_enabled}
@@ -172,7 +247,15 @@ async def update_profile(update: ProfileUpdate) -> dict:
 
 @app.post("/v1/agent")
 async def agent(request: AgentRequest):
-    return await runtime.handle(request)
+    response = await runtime.handle(request)
+    goal = str(request.message)
+    device_id = str(request.context.get("device_id", "")).strip()
+    if device_id:
+        live_tasks.bind(request.conversation_id, goal, device_id)
+        await live_events.publish("task.started", {"goal": goal, "device_id": device_id}, task_id=request.conversation_id)
+    for event in response.events:
+        await live_events.publish(event.get("type", "task.event"), event, task_id=request.conversation_id)
+    return response
 
 
 @app.get("/v1/approvals/{conversation_id}")
