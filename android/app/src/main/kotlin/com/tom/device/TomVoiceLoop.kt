@@ -21,7 +21,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
 
-/** Real Android full-duplex TOM voice transport. */
+/** Continuous Android PCM transport for TOM's neural full-duplex voice loop. */
 class TomVoiceLoop(
     private val context: Context,
     private val endpoint: String,
@@ -33,11 +33,9 @@ class TomVoiceLoop(
     companion object {
         private const val INPUT_RATE = 16_000
         private const val OUTPUT_RATE = 24_000
-        private const val FRAME_SAMPLES = 320
+        private const val FRAME_SAMPLES = 320 // 20 ms @ 16 kHz
         private const val START_RMS = 0.020f
-        private const val CONTINUE_RMS = 0.014f
         private const val START_FRAMES = 2
-        private const val END_SILENCE_MS = 650
     }
 
     private val client = OkHttpClient.Builder().build()
@@ -76,9 +74,10 @@ class TomVoiceLoop(
                 webSocket.send(
                     JSONObject()
                         .put("type", "hello")
-                        .put("protocol", 1)
+                        .put("protocol", 2)
                         .put("voice_id", voiceId)
                         .put("sample_rate", INPUT_RATE)
+                        .put("continuous_audio", true)
                         .toString()
                 )
                 onState("connected")
@@ -112,10 +111,14 @@ class TomVoiceLoop(
 
     private fun handleEvent(event: JSONObject) {
         when (event.optString("type")) {
-            "connected" -> onState("connected")
-            "ready" -> onState("listening")
+            "connected", "ready" -> onState("listening")
             "state" -> onState(event.optString("value", "working"))
+            "partial_transcript" -> onTranscript(event.optString("text"))
             "transcript" -> onTranscript(event.optString("text"))
+            "prosody" -> {
+                if (event.optBoolean("continuous", false)) onState("listening")
+            }
+            "turn_prediction" -> Unit
             "audio_start" -> {
                 tomSpeaking = true
                 ensureTrack()
@@ -145,7 +148,7 @@ class TomVoiceLoop(
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
             )
-            val bufferSize = maxOf(minBuffer, FRAME_SAMPLES * 2 * 4)
+            val bufferSize = maxOf(minBuffer, FRAME_SAMPLES * 2 * 8)
             val local = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 INPUT_RATE,
@@ -156,44 +159,39 @@ class TomVoiceLoop(
             recorder = local
             echoCanceler = AcousticEchoCanceler.create(local.audioSessionId)?.also { it.enabled = true }
             val frame = ShortArray(FRAME_SAMPLES)
-            var speechFrames = 0
-            var silenceMs = 0
-            var sentTurn = false
+            var localSpeechFrames = 0
+            var localSpeaking = false
             try {
                 local.startRecording()
                 while (running.get()) {
                     val read = local.read(frame, 0, frame.size, AudioRecord.READ_BLOCKING)
                     if (read <= 0) continue
-                    val rms = rms(frame, read)
-                    val active = if (sentTurn) rms >= CONTINUE_RMS else rms >= START_RMS
+                    val pcm = shortsToBytes(frame, read)
+
+                    // Continuous transport: the server's neural VAD sees every frame,
+                    // including silence, so turn boundaries are model-driven.
+                    socket?.send(okio.ByteString.of(*pcm))
+
+                    // Lightweight local barge-in guard keeps interruption latency low
+                    // while the server neural VAD/turn model makes the authoritative decision.
+                    val active = rms(frame, read) >= START_RMS
                     if (active) {
-                        speechFrames++
-                        silenceMs = 0
-                        if (!sentTurn && speechFrames >= START_FRAMES) {
-                            sentTurn = true
+                        localSpeechFrames++
+                        if (!localSpeaking && localSpeechFrames >= START_FRAMES) {
+                            localSpeaking = true
                             if (tomSpeaking) {
                                 socket?.send(
-                                    JSONObject().put("type", "interrupt").put("reason", "user_barge_in").toString()
+                                    JSONObject()
+                                        .put("type", "interrupt")
+                                        .put("reason", "android_local_barge_in")
+                                        .toString()
                                 )
+                                onState("interrupting")
                             }
-                            socket?.send(
-                                JSONObject().put("type", "audio_start").put("sample_rate", INPUT_RATE).toString()
-                            )
-                            onState(if (tomSpeaking) "interrupting" else "listening")
-                        }
-                        if (sentTurn) socket?.send(okio.ByteString.of(*shortsToBytes(frame, read)))
-                    } else if (sentTurn) {
-                        silenceMs += 20
-                        socket?.send(okio.ByteString.of(*shortsToBytes(frame, read)))
-                        if (silenceMs >= END_SILENCE_MS) {
-                            socket?.send(JSONObject().put("type", "audio_end").toString())
-                            sentTurn = false
-                            speechFrames = 0
-                            silenceMs = 0
-                            onState("thinking")
                         }
                     } else {
-                        speechFrames = maxOf(0, speechFrames - 1)
+                        localSpeechFrames = maxOf(0, localSpeechFrames - 1)
+                        if (localSpeechFrames == 0) localSpeaking = false
                     }
                 }
             } catch (t: Throwable) {
