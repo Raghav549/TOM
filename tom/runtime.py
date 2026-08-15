@@ -43,7 +43,7 @@ class AgentRuntime:
             if decision is Decision.DENY:
                 events.append({"type": "tool.denied", "tool": call.name, "risk": call.risk.value})
                 continue
-            results.append(await self._execute(call, events))
+            results.append(await self._execute(call, events, context=context, conversation_id=request.conversation_id))
 
         if pending:
             self._pending[request.conversation_id] = pending
@@ -71,14 +71,20 @@ class AgentRuntime:
         if tool_index < 0 or tool_index >= len(calls):
             raise IndexError("invalid pending tool index")
         call = calls[tool_index]
-        self.approvals.approve(call)
+        token = self.approvals.approve(call)
         if not self.approvals.consume(call):
             raise RuntimeError("approval token could not be consumed")
         if self.policy.decide(call, approved=True) is not Decision.ALLOW:
             raise PermissionError("approved action was not allowed by policy")
 
         events: list[dict[str, Any]] = []
-        result = await self._execute(call, events)
+        result = await self._execute(
+            call,
+            events,
+            context={"approved": True},
+            conversation_id=conversation_id,
+            approval_token=token,
+        )
         del calls[tool_index]
         if not calls:
             self._pending.pop(conversation_id, None)
@@ -86,10 +92,27 @@ class AgentRuntime:
         self.memory.add(conversation_id, "assistant", reply, {"events": events, "result": result.model_dump()})
         return {"tool": call.name, "result": result.model_dump(), "reply": reply, "events": events}
 
-    async def _execute(self, call: ToolCall, events: list[dict[str, Any]]) -> ToolResult:
+    async def _execute(
+        self,
+        call: ToolCall,
+        events: list[dict[str, Any]],
+        *,
+        context: dict[str, Any] | None = None,
+        conversation_id: str | None = None,
+        approval_token: str | None = None,
+    ) -> ToolResult:
         try:
             tool = self.tools.get(call)
-            output = await tool.run(call.arguments)
+            arguments = dict(call.arguments)
+            if call.name.startswith("device_"):
+                device_id = str((context or {}).get("device_id", "")).strip()
+                if device_id:
+                    arguments.setdefault("device_id", device_id)
+                if conversation_id:
+                    arguments.setdefault("task_id", conversation_id)
+                if approval_token:
+                    arguments["approval_token"] = approval_token
+            output = await tool.run(arguments)
             result = ToolResult(tool=call.name, success=True, output=output)
             verification = self.verifier.verify(result)
             if not verification.ok:
