@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-import hashlib
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from .fusion import FusedTarget, PerceptionFusion
 from .multimodal_observation import MultimodalObservation
-from .openai_compatible_vision import OpenAICompatibleVision
 from .screenshot_reassembler import ScreenshotReassembler
 from .visual_adapter import VisualModelAdapter
 

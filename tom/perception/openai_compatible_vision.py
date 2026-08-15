@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from .visual_adapter import VisualAnalysis, VisualModelAdapter, VisualRegion
+from .visual_adapter import VisualAnalysis, VisualRegion
 
 
 @dataclass(frozen=True)

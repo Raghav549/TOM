@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Awaitable, Callable
 
 from tom.perception.action_verifier import ActionVerifier, VerificationResult
 from tom.perception.multimodal_observation import MultimodalObservation

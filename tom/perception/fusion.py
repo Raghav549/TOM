@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .multimodal_observation import UiNode
-from .visual_adapter import VisualAnalysis, VisualRegion
+from .visual_adapter import VisualAnalysis
 
 
 @dataclass(frozen=True)

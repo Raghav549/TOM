@@ -15,9 +15,9 @@ from tom.device_auth import DeviceAuthenticator
 from tom.device_capabilities import DeviceCapabilityRegistry
 from tom.memory import MemoryStore
 from tom.models import AgentRequest
-from tom.permissions import PermissionPolicy
 from tom.perception.pipeline import MultimodalRuntime
 from tom.perception.vision_runtime import OpenAICompatibleVisionAdapter, VisionRuntimeConfig
+from tom.permissions import PermissionPolicy
 from tom.planner import ModelPlanner, RulePlanner
 from tom.providers import OpenAICompatibleLLM
 from tom.response import FriendlyFallback, ModelResponder

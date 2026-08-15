@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-
 SECRET_PATTERNS = (
     re.compile(r"(?i)bearer\s+[a-z0-9._-]{20,}"),
     re.compile(r"(?i)(api[_-]?key|access[_-]?token|refresh[_-]?token|password)\s*[:=]\s*[^\s]+"),

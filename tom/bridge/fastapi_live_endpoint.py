@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import secrets
-
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from .live_auth import LiveDeviceAuthenticator

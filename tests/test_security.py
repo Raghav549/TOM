@@ -1,4 +1,3 @@
-import pytest
 
 from tom.approval import ApprovalGate
 from tom.models import Risk, ToolCall

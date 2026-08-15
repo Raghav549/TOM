@@ -1,7 +1,10 @@
 import pytest
 
 from tom.bridge.runtime_event_router import AndroidBridgeEventRouter, BridgeEvent
-from tom.execution.android_recovery_runtime import AndroidActionRecoveryRuntime, AndroidExecutionState
+from tom.execution.android_recovery_runtime import (
+    AndroidActionRecoveryRuntime,
+    AndroidExecutionState,
+)
 from tom.perception.action_plan import GroundedActionPlan
 from tom.perception.multimodal_observation import MultimodalObservation
 

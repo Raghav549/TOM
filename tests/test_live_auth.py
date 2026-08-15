@@ -11,8 +11,8 @@ def test_device_secret_challenge_proof():
     assert issued is not None
     challenge, session = issued
 
-    import hmac
     import hashlib
+    import hmac
     proof = hmac.new(secret, challenge.encode(), hashlib.sha256).hexdigest()
     assert auth.verify("phone-1", challenge, proof)
     assert not auth.verify("phone-1", challenge, "bad")

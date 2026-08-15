@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -12,10 +12,10 @@ class GuardedContext:
 
 
 _INSTRUCTION_PATTERNS = (
-    re.compile(r"ignore (?:all|any|previous|prior) instructions", re.I),
-    re.compile(r"system message", re.I),
-    re.compile(r"developer message", re.I),
-    re.compile(r"reveal (?:your|the) (?:system|developer) prompt", re.I),
+    re.compile(r"ignore (?:all|any|previous|prior) instructions", re.IGNORECASE),
+    re.compile(r"system message", re.IGNORECASE),
+    re.compile(r"developer message", re.IGNORECASE),
+    re.compile(r"reveal (?:your|the) (?:system|developer) prompt", re.IGNORECASE),
 )
 
 

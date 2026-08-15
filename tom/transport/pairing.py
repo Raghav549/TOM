@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import hmac
 import secrets
 import time
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)

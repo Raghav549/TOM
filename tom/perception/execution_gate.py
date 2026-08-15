@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from .action_plan import GroundedActionPlan
 
+from .action_plan import GroundedActionPlan
 
 CONSEQUENTIAL_INTENTS = {
     "send_message", "send_email", "purchase", "payment", "delete",

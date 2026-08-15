@@ -2,7 +2,7 @@ import pytest
 
 from tom.approval import ApprovalGate
 from tom.memory import MemoryStore
-from tom.models import AgentRequest, Risk, ToolCall
+from tom.models import AgentRequest, Risk
 from tom.planner import RulePlanner
 from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry

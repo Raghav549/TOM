@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
-from tom.execution.android_recovery_runtime import AndroidActionRecoveryRuntime, AndroidExecutionResult
+from tom.execution.android_recovery_runtime import (
+    AndroidActionRecoveryRuntime,
+    AndroidExecutionResult,
+)
 from tom.perception.action_plan import GroundedActionPlan
 from tom.perception.multimodal_observation import MultimodalObservation
 
@@ -49,7 +53,7 @@ class AndroidBridgeEventRouter:
         await send(request)
         try:
             return await asyncio.wait_for(future, timeout=timeout)
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             self._pending.pop(correlation_id, None)
             return None
 

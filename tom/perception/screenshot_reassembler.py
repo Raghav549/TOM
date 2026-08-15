@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import base64
 import hashlib
+from dataclasses import dataclass, field
 
 from .screenshot_transport import MAX_FRAME_BYTES, ScreenshotChunk
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Awaitable, Callable
 
 from tom.execution.recovery_loop import RecoveryPolicy
 from tom.perception.action_plan import GroundedActionPlan

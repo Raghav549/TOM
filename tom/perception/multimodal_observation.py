@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -40,10 +40,10 @@ class MultimodalObservation:
     source: str = "android"
 
     @staticmethod
-    def now(observation_id: str, package_name: str | None, nodes: tuple[UiNode, ...] = ()) -> "MultimodalObservation":
+    def now(observation_id: str, package_name: str | None, nodes: tuple[UiNode, ...] = ()) -> MultimodalObservation:
         return MultimodalObservation(
             observation_id=observation_id,
-            captured_at=datetime.now(timezone.utc).isoformat(),
+            captured_at=datetime.now(UTC).isoformat(),
             package_name=package_name,
             window_id=None,
             nodes=nodes,

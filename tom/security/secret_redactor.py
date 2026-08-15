@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 
-
 _PATTERNS = (
     re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[A-Za-z0-9._~+/=-]+"),
     re.compile(r"(?i)(api[_ -]?key\s*[:=]\s*)[^\s,;]+"),

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
-from typing import Iterable
+from dataclasses import dataclass
 
-from .multimodal_observation import MultimodalObservation, UiNode
+from .multimodal_observation import MultimodalObservation
 
 
 @dataclass(frozen=True)

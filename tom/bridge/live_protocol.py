@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
-import json
-
 
 ALLOWED_TYPES = {
     "HELLO", "HELLO_ACK", "ACTION_REQUEST", "ACTION_ACK", "ACTION_RESULT",
@@ -36,7 +35,7 @@ class BridgeEnvelope:
         }, separators=(",", ":"))
 
     @staticmethod
-    def decode(raw: str) -> "BridgeEnvelope":
+    def decode(raw: str) -> BridgeEnvelope:
         obj = json.loads(raw)
         if obj.get("v") != 1 or obj.get("type") not in ALLOWED_TYPES:
             raise ValueError("invalid bridge envelope")

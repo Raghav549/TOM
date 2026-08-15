@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable
 
 
 class CapabilityState(str, Enum):
@@ -60,7 +60,7 @@ class DeviceCapabilityRegistry:
         return capability
 
     @classmethod
-    def android_baseline(cls, granted: Iterable[str] = ()) -> "DeviceCapabilityRegistry":
+    def android_baseline(cls, granted: Iterable[str] = ()) -> DeviceCapabilityRegistry:
         granted_set = set(granted)
         registry = cls()
         definitions = {

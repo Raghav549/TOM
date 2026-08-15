@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import math
-
+from dataclasses import dataclass
 
 MAX_CHUNK_BYTES = 256 * 1024
 MAX_FRAME_BYTES = 12 * 1024 * 1024

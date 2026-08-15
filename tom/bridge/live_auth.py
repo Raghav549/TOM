@@ -15,7 +15,7 @@ class LiveAuthConfig:
     secrets: dict[str, bytes]
 
     @classmethod
-    def from_environment(cls) -> "LiveAuthConfig":
+    def from_environment(cls) -> LiveAuthConfig:
         raw = os.getenv("TOM_DEVICE_SECRETS_JSON", "")
         if not raw:
             return cls({})

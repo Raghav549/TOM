@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable
 
 from .action_plan import GroundedActionPlan, GroundedActionPlanner
 from .chunk_receiver import ScreenshotReassembler
 from .fusion import PerceptionFusion
-from .multimodal_observation import MultimodalObservation, UiNode
+from .multimodal_observation import MultimodalObservation
 from .visual_adapter import VisualAnalysis
 
 
