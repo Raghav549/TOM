@@ -61,7 +61,7 @@ class ModelPlanner:
         try:
             raw = await self.llm.complete(messages, temperature=0, response_format={"type": "json_object"})
             return self._parse(raw, goal, tools)
-        except (ValueError, TypeError, KeyError, ValidationError, json.JSONDecodeError):
+        except Exception:  # noqa: BLE001 - model providers are external boundaries
             return await self.fallback.plan(goal, context)
 
     @staticmethod
