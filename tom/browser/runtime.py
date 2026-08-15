@@ -14,13 +14,7 @@ class BrowserSnapshot:
 
 
 class PlaywrightBrowser:
-    """Real browser runtime with an explicit navigation safety boundary.
-
-    The browser is intentionally session-scoped. It never receives stored
-    passwords or payment credentials from TOM; authentication stays in the
-    user's browser session/profile and consequential actions remain gated by
-    the agent approval policy.
-    """
+    """Real visible browser runtime with an explicit navigation safety boundary."""
 
     def __init__(self, *, allowed_hosts: set[str] | None = None, headless: bool = False) -> None:
         self.policy = BrowserSafetyPolicy(allowed_hosts=allowed_hosts)
@@ -30,7 +24,13 @@ class PlaywrightBrowser:
         self._context: Any = None
         self._page: Any = None
 
+    async def ensure_started(self) -> None:
+        if self._page is None:
+            await self.start()
+
     async def start(self) -> None:
+        if self._page is not None:
+            return
         try:
             from playwright.async_api import async_playwright
         except ImportError as exc:
@@ -75,17 +75,6 @@ class PlaywrightBrowser:
     async def fill(self, selector: str, value: str) -> BrowserSnapshot:
         page = self._require_page()
         await page.locator(selector).first.fill(value)
-        return await self.snapshot()
-
-    async def search(self, url: str, query_selector: str, query: str) -> BrowserSnapshot:
-        snapshot = await self.goto(url)
-        _ = snapshot
-        return await self.fill_and_enter(query_selector, query)
-
-    async def fill_and_enter(self, selector: str, value: str) -> BrowserSnapshot:
-        page = self._require_page()
-        await page.locator(selector).first.fill(value)
-        await page.locator(selector).first.press("Enter")
         return await self.snapshot()
 
     async def back(self) -> BrowserSnapshot:
