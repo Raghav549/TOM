@@ -5,9 +5,11 @@ import asyncio
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from tom.api.bridge_server import install_android_bridge
 from tom.approval import ApprovalGate
 from tom.companion import CompanionProfile
 from tom.config import settings
+from tom.device_auth import DeviceAuthenticator
 from tom.device_capabilities import DeviceCapabilityRegistry
 from tom.memory import MemoryStore
 from tom.models import AgentRequest
@@ -18,7 +20,6 @@ from tom.response import FriendlyFallback, ModelResponder
 from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry
 from tom.voice import VOICES
-from tom.api.bridge_server import install_android_bridge
 
 app = FastAPI(title="TOM Agent Runtime", version="0.6.0")
 profile = CompanionProfile()
@@ -44,9 +45,8 @@ runtime = AgentRuntime(
     responder,
 )
 
-# Bridge dependencies are explicit application state so the WebSocket endpoint
-# cannot silently fall back to an unauthenticated device identity.
-app.state.tom_device_auth = runtime.device_auth
+device_auth = DeviceAuthenticator()
+app.state.tom_device_auth = device_auth
 app.state.tom_bridge_events = asyncio.Queue(maxsize=512)
 android_bridge = install_android_bridge(app)
 
