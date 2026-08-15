@@ -58,15 +58,17 @@ class RemoteDeviceTool:
         self.sessions = sessions
 
     async def run(self, arguments: dict[str, Any]) -> Any:
-        device_id = str(arguments.pop("device_id", "")).strip()
-        task_id = str(arguments.pop("task_id", "")).strip()
+        args = dict(arguments)
+        device_id = str(args.pop("device_id", "")).strip()
+        task_id = str(args.pop("task_id", "")).strip()
+        approval_token = args.pop("approval_token", None)
         if not device_id or not task_id:
             raise RuntimeError("device_id and task_id are required")
         session = self.sessions.get(device_id)
         if session is None or not session.authenticated:
             raise RuntimeError("Android device is not connected")
-        call = ToolCall(name=self.name, arguments=arguments, risk=self.risk)
-        result = await session.request_action(task_id, call, arguments.pop("approval_token", None))
+        call = ToolCall(name=self.name, arguments=args, risk=self.risk)
+        result = await session.request_action(task_id, call, approval_token)
         if not result.get("accepted") or result.get("status") not in {"completed", "verified"}:
             raise RuntimeError(result.get("error") or result.get("status") or "Android action failed")
         return result
@@ -145,8 +147,6 @@ class LiveDeviceRegistry:
                     observation_id = str(payload.get("observation_id") or observation.get("timestamp_ms") or secrets.token_hex(8))
                     session.observations[observation_id] = observation
                 elif event_type == "screenshot_complete":
-                    # Screenshot chunks are consumed by CoreBridgeReceiver; this
-                    # registry only exposes the lifecycle event to runtime consumers.
                     pass
         except (WebSocketDisconnect, json.JSONDecodeError):
             pass
