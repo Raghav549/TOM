@@ -46,22 +46,26 @@ class TomAccessibilityService : AccessibilityService() {
         if (!structural && !windowChanged && now - lastSnapshotAt < 300L) return
         if (now - lastSnapshotAt < 120L && !windowChanged) return
 
-        val root = rootInActiveWindow ?: return
         lastSnapshotAt = now
         lastWindowId = event.windowId
         lastPackage = event.packageName?.toString() ?: ""
-
-        val snapshot = JSONObject().apply {
-            put("package", lastPackage)
-            put("event_type", type)
-            put("window_id", event.windowId)
-            put("tree", serializeNode(root, "0", 0, 72))
-            put("timestamp_ms", System.currentTimeMillis())
-        }
-        TomBridgeRegistry.publishObservation(snapshot.toString())
+        publishCurrentObservation()
     }
 
     override fun onInterrupt() = Unit
+
+    fun publishCurrentObservation(taskId: String? = null, actionId: String? = null): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val snapshot = JSONObject().apply {
+            put("package", lastPackage)
+            put("event_type", "explicit_observation")
+            put("window_id", lastWindowId)
+            put("tree", serializeNode(root, "0", 0, 72))
+            put("timestamp_ms", System.currentTimeMillis())
+        }
+        TomBridgeRegistry.publishObservation(snapshot.toString(), taskId, actionId)
+        return true
+    }
 
     fun click(node: AccessibilityNodeInfo): Boolean =
         node.isEnabled && node.isVisibleToUser && node.isClickable &&
@@ -141,7 +145,6 @@ class TomAccessibilityService : AccessibilityService() {
         return true
     }
 
-    /** Opens an Android URI intent such as upi://pay, geo:, mailto:, smsto:, or a calendar URI. */
     fun openIntentUri(intentUri: String): Boolean {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(intentUri)).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
