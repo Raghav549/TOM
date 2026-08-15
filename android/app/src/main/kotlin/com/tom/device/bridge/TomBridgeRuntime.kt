@@ -1,6 +1,7 @@
 package com.tom.device.bridge
 
 import android.util.Log
+import com.tom.device.TomAccessibilityService
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
@@ -130,8 +131,13 @@ class TomBridgeRuntime(
         })
     }
 
-    override fun onDisconnected(reason: String) = Log.w("TOM", "bridge disconnected: $reason")
-    override fun onError(error: Throwable) = Log.e("TOM", "bridge transport error", error)
+    override fun onDisconnected(reason: String) {
+        Log.w("TOM", "bridge disconnected: $reason")
+    }
+
+    override fun onError(error: Throwable) {
+        Log.e("TOM", "bridge transport error", error)
+    }
 
     companion object {
         private val CONSEQUENT_ACTIONS = setOf(
