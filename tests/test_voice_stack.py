@@ -2,7 +2,7 @@ import pytest
 
 from tom.voice.director import ConversationSignals, VoiceDirector
 from tom.voice.engine import ExternalCommandSpeechEngine, SpeechEngineConfig
-from tom.voice.models import Emotion, Language, VOICE_PROFILES
+from tom.voice.models import VOICE_PROFILES, Emotion, Language
 from tom.voice.session import VoiceSession
 
 
