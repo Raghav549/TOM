@@ -3,6 +3,7 @@ package com.tom.device.bridge
 import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
 import android.os.Build
+import android.view.Display
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.util.Base64
@@ -30,7 +31,7 @@ class TomScreenshotCapture(private val service: AccessibilityService) {
             return
         }
         service.takeScreenshot(
-            AccessibilityService.SCREENSHOT_DISPLAY,
+            Display.DEFAULT_DISPLAY,
             service.mainExecutor,
             object : AccessibilityService.TakeScreenshotCallback {
                 override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
