@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
@@ -16,8 +18,9 @@ from tom.response import FriendlyFallback, ModelResponder
 from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry
 from tom.voice import VOICES
+from tom.api.bridge_server import install_android_bridge
 
-app = FastAPI(title="TOM Agent Runtime", version="0.5.0")
+app = FastAPI(title="TOM Agent Runtime", version="0.6.0")
 profile = CompanionProfile()
 tools = ToolRegistry({})
 device_capabilities = DeviceCapabilityRegistry.android_baseline()
@@ -41,6 +44,12 @@ runtime = AgentRuntime(
     responder,
 )
 
+# Bridge dependencies are explicit application state so the WebSocket endpoint
+# cannot silently fall back to an unauthenticated device identity.
+app.state.tom_device_auth = runtime.device_auth
+app.state.tom_bridge_events = asyncio.Queue(maxsize=512)
+android_bridge = install_android_bridge(app)
+
 
 class ProfileUpdate(BaseModel):
     name: str | None = None
@@ -57,7 +66,7 @@ class ApprovalRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "tom", "version": "0.5.0"}
+    return {"status": "ok", "service": "tom", "version": "0.6.0"}
 
 
 @app.get("/v1/capabilities")
@@ -66,7 +75,7 @@ async def capabilities() -> dict:
         "core": [
             "planning", "structured_tool_calls", "tool_discovery",
             "execution_verification", "memory", "approval", "event_stream",
-            "natural_response", "device_capability_discovery",
+            "natural_response", "device_capability_discovery", "android_websocket_bridge",
         ],
         "model_runtime": settings.llm_enabled,
         "voice_profiles": [voice.id for voice in VOICES],
@@ -80,6 +89,11 @@ async def capabilities() -> dict:
 @app.get("/v1/device/capabilities")
 async def device_capability_status() -> dict:
     return {"capabilities": device_capabilities.describe()}
+
+
+@app.get("/v1/device/sessions")
+async def device_sessions() -> dict:
+    return {"connected_devices": sorted(android_bridge.sessions)}
 
 
 @app.get("/v1/profile")
