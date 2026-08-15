@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import re
@@ -24,8 +25,8 @@ class OpenAICompatibleVision:
         The adapter requests strict JSON and validates every returned bounding box.
         It does not fabricate detections when the model returns malformed output.
         """
-        with open(image_ref, "rb") as handle:
-            encoded = base64.b64encode(handle.read()).decode("ascii")
+        image_bytes = await asyncio.to_thread(lambda: open(image_ref, "rb").read())
+        encoded = base64.b64encode(image_bytes).decode("ascii")
         messages: list[dict[str, Any]] = [{
             "role": "user",
             "content": [
