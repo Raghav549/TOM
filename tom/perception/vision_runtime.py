@@ -73,5 +73,5 @@ class OpenAICompatibleVisionAdapter:
             raise ValueError("vision model did not return JSON")
         value = json.loads(match.group(0))
         if not isinstance(value, dict):
-            raise ValueError("vision model returned non-object JSON")
+            raise TypeError("vision model returned non-object JSON")
         return value
