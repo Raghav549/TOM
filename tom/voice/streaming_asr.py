@@ -76,9 +76,7 @@ class StreamingFasterWhisper:
         return result
 
     def final(self, sample_rate: int = 16_000) -> PartialTranscript:
-        return self._decode(self._load(), bytes(self._buffer)).__class__(
-            self._decode(self._load(), bytes(self._buffer)).text,
-            self._decode(self._load(), bytes(self._buffer)).confidence,
-            self._decode(self._load(), bytes(self._buffer)).language,
-            True,
-        )
+        if sample_rate != 16_000:
+            raise ValueError("StreamingFasterWhisper requires 16 kHz audio")
+        result = self._decode(self._load(), bytes(self._buffer))
+        return PartialTranscript(result.text, result.confidence, result.language, True)
