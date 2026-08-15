@@ -3,6 +3,7 @@ package com.tom.device
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.graphics.Path
+import android.graphics.Rect
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -31,7 +32,7 @@ class TomAccessibilityService : AccessibilityService() {
             put("package", event.packageName?.toString() ?: "")
             put("event_type", event.eventType)
             put("window_id", event.windowId)
-            put("tree", serializeNode(root, 0, 80))
+            put("tree", serializeNode(root, "0", 0, 80))
             put("timestamp_ms", System.currentTimeMillis())
         }
         TomBridgeRegistry.publishObservation(snapshot.toString())
@@ -41,6 +42,15 @@ class TomAccessibilityService : AccessibilityService() {
 
     fun click(node: AccessibilityNodeInfo): Boolean =
         node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+
+    fun clickNode(nodeId: String): Boolean {
+        val root = rootInActiveWindow ?: return false
+        return findNode(root, nodeId)?.let { node ->
+            val clicked = node.isEnabled && node.isVisibleToUser && node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            node.recycle()
+            clicked
+        } ?: false
+    }
 
     fun setText(node: AccessibilityNodeInfo, text: String): Boolean {
         if (!node.isEditable || node.isPassword) return false
@@ -70,8 +80,10 @@ class TomAccessibilityService : AccessibilityService() {
         return dispatchGesture(gesture, null, null)
     }
 
-    private fun serializeNode(node: AccessibilityNodeInfo, depth: Int, budget: Int): JSONObject {
+    private fun serializeNode(node: AccessibilityNodeInfo, nodeId: String, depth: Int, budget: Int): JSONObject {
+        val bounds = Rect().also(node::getBoundsInScreen)
         val out = JSONObject().apply {
+            put("node_id", nodeId)
             put("class", node.className?.toString() ?: "")
             put("text", if (node.isPassword) "[REDACTED]" else (node.text?.toString() ?: ""))
             put("description", node.contentDescription?.toString() ?: "")
@@ -79,19 +91,35 @@ class TomAccessibilityService : AccessibilityService() {
             put("editable", node.isEditable)
             put("enabled", node.isEnabled)
             put("visible", node.isVisibleToUser)
+            put("password", node.isPassword)
             put("view_id", node.viewIdResourceName ?: "")
+            put("bounds", JSONArray(listOf(bounds.left, bounds.top, bounds.right, bounds.bottom)))
         }
         if (depth >= 8 || budget <= 0) return out
         val children = JSONArray()
         val limit = minOf(node.childCount, 40, budget)
         for (i in 0 until limit) {
             node.getChild(i)?.let { child ->
-                children.put(serializeNode(child, depth + 1, budget - i - 1))
+                children.put(serializeNode(child, "$nodeId.$i", depth + 1, budget - i - 1))
                 child.recycle()
             }
         }
         out.put("children", children)
         return out
+    }
+
+    private fun findNode(node: AccessibilityNodeInfo, targetId: String, currentId: String = "0"): AccessibilityNodeInfo? {
+        if (currentId == targetId) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findNode(child, targetId, "$currentId.$i")
+            if (found != null) {
+                if (found !== child) child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
     }
 
     companion object {
