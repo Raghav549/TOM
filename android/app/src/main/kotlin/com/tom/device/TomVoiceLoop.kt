@@ -93,7 +93,7 @@ class TomVoiceLoop(
             override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
                 if (!running.get()) return
                 ensureTrack()
-                track?.write(bytes.toByteArray(), 0, bytes.size())
+                track?.write(bytes.toByteArray(), 0, bytes.size)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
