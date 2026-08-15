@@ -10,7 +10,7 @@ def test_uncertain_dense_ui_routes_to_fused_visual_refinement():
     )
     assert decision.mode is PerceptionMode.FUSED
     assert decision.require_visual_refinement is True
-    assert decision.allow_batch is True
+    assert decision.allow_batch is False
 
 
 def test_consequential_action_is_never_batched():
