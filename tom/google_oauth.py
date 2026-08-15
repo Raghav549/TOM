@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
+import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlencode
 
@@ -21,32 +23,26 @@ SCOPES = (
 @dataclass
 class GoogleOAuth:
     credentials: CredentialManager
+    _pending_states: set[str] = field(default_factory=set)
+
+    def _env(self, name: str) -> str:
+        value = os.getenv(name, "").strip()
+        if not value:
+            raise RuntimeError(f"{name} is not configured")
+        return value
 
     def client_id(self) -> str:
-        import os
-
-        value = os.getenv("TOM_GOOGLE_CLIENT_ID", "").strip()
-        if not value:
-            raise RuntimeError("TOM_GOOGLE_CLIENT_ID is not configured")
-        return value
+        return self._env("TOM_GOOGLE_CLIENT_ID")
 
     def client_secret(self) -> str:
-        import os
-
-        value = os.getenv("TOM_GOOGLE_CLIENT_SECRET", "").strip()
-        if not value:
-            raise RuntimeError("TOM_GOOGLE_CLIENT_SECRET is not configured")
-        return value
+        return self._env("TOM_GOOGLE_CLIENT_SECRET")
 
     def redirect_uri(self) -> str:
-        import os
+        return self._env("TOM_GOOGLE_REDIRECT_URI")
 
-        value = os.getenv("TOM_GOOGLE_REDIRECT_URI", "").strip()
-        if not value:
-            raise RuntimeError("TOM_GOOGLE_REDIRECT_URI is not configured")
-        return value
-
-    def authorization_url(self, state: str) -> str:
+    def begin(self) -> dict[str, str]:
+        state = secrets.token_urlsafe(32)
+        self._pending_states.add(state)
         params = {
             "client_id": self.client_id(),
             "redirect_uri": self.redirect_uri(),
@@ -57,9 +53,12 @@ class GoogleOAuth:
             "include_granted_scopes": "true",
             "state": state,
         }
-        return f"{GOOGLE_AUTH}?{urlencode(params)}"
+        return {"state": state, "authorization_url": f"{GOOGLE_AUTH}?{urlencode(params)}"}
 
-    async def exchange(self, code: str) -> dict[str, Any]:
+    async def exchange(self, code: str, state: str) -> dict[str, Any]:
+        if not state or state not in self._pending_states:
+            raise RuntimeError("invalid or expired Google OAuth state")
+        self._pending_states.discard(state)
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
                 GOOGLE_TOKEN,
@@ -75,7 +74,7 @@ class GoogleOAuth:
             token = response.json()
         token["expires_at"] = int(time.time()) + int(token.get("expires_in", 3600))
         self.credentials.set("google", token)
-        return token
+        return {"connected": True, "token_type": token.get("token_type"), "scope": token.get("scope"), "expires_at": token["expires_at"]}
 
     async def access_token(self) -> str:
         token = self.credentials.get("google")
