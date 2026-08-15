@@ -6,6 +6,7 @@ import os
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field
 
+from tom.android_tools import register_android_tools
 from tom.api.bridge_server import install_android_bridge
 from tom.api.device_ws import build_device_websocket
 from tom.api.voice_ws import build_live_voice_websocket
@@ -49,6 +50,7 @@ device_auth = DeviceAuthenticator()
 app.state.tom_device_auth = device_auth
 app.state.tom_bridge_events = asyncio.Queue(maxsize=512)
 android_bridge = install_android_bridge(app)
+register_android_tools(tools, android_bridge)
 
 vision_base_url = os.getenv("TOM_VISION_BASE_URL", "").strip()
 vision_model = os.getenv("TOM_VISION_MODEL", "").strip()
@@ -59,7 +61,6 @@ if vision_base_url and vision_model:
 if vision_runtime is not None:
     app.include_router(build_device_websocket(vision_runtime))
 
-# Live voice is always wired into the API. Heavy neural models load lazily on first use.
 app.include_router(build_live_voice_websocket(runtime))
 voice_session = VoiceSession(ExternalCommandSpeechEngine(SpeechEngineConfig()))
 
@@ -100,6 +101,7 @@ async def capabilities() -> dict:
         "core": [
             "planning", "structured_tool_calls", "tool_discovery", "execution_verification", "memory", "approval",
             "event_stream", "natural_response", "device_capability_discovery", "android_websocket_bridge",
+            "real_android_action_tools", "correlated_post_action_verification",
             "multimodal_perception", "screenshot_chunk_reassembly", "semantic_visual_fusion",
             "live_full_duplex_voice", "android_continuous_pcm_stream", "neural_vad", "streaming_asr",
             "partial_transcripts", "learned_turn_prediction", "continuous_prosody_state",
