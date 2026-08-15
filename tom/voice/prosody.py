@@ -6,12 +6,14 @@ import re
 import struct
 from dataclasses import dataclass
 
+
 @dataclass(frozen=True)
 class AcousticFrame:
     rms: float
     pitch_hz: float | None
     pitch_confidence: float
     zero_crossing_rate: float
+
 
 @dataclass(frozen=True)
 class UserProsody:
@@ -26,12 +28,14 @@ class UserProsody:
     likely_excited: bool
     likely_tired_or_calm: bool
 
+
 @dataclass(frozen=True)
 class SpeechCue:
     kind: str
     position: int
     duration_ms: int = 0
     strength: float = 0.0
+
 
 @dataclass(frozen=True)
 class ExpressivePlan:
@@ -96,9 +100,18 @@ class PCM16ProsodyExtractor:
         voiced_ratio = len(voiced) / max(1, len(frames))
         speech_rate_proxy = voiced_ratio * (1.0 + min(1.0, pitch_var / 60.0))
         confidence = sum(f.pitch_confidence for f in voiced) / len(voiced) if voiced else 0.0
-        return UserProsody(mean_pitch, pitch_range, energy, energy_var, pitch_var, speech_rate_proxy,
-                           confidence, False, pitch_var > 35.0 and energy_var > 0.035,
-                           pitch_var < 10.0 and energy_var < 0.012 and voiced_ratio > 0.25)
+        return UserProsody(
+            mean_pitch,
+            pitch_range,
+            energy,
+            energy_var,
+            pitch_var,
+            speech_rate_proxy,
+            confidence,
+            False,
+            pitch_var > 35.0 and energy_var > 0.035,
+            pitch_var < 10.0 and energy_var < 0.012 and voiced_ratio > 0.25,
+        )
 
 
 class ExpressiveSpeechPlanner:
