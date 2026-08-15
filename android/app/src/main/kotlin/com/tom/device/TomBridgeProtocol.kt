@@ -7,7 +7,7 @@ sealed interface TomBridgeMessage
 
 data class DeviceHello(
     val deviceId: String,
-    val protocolVersion: Int = 1,
+    val protocolVersion: Int = 2,
     val capabilities: List<String>,
 ) : TomBridgeMessage
 
@@ -24,11 +24,16 @@ data class ActionRequest(
     val action: String,
     val targetNodeId: String? = null,
     val text: String? = null,
+    val url: String? = null,
+    val packageName: String? = null,
+    val intentUri: String? = null,
+    val mimeType: String? = null,
     val x: Float? = null,
     val y: Float? = null,
     val endX: Float? = null,
     val endY: Float? = null,
     val durationMs: Long? = null,
+    val longPressMs: Long? = null,
 ) : TomBridgeMessage
 
 data class ActionResult(
