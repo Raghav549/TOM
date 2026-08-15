@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
 import sqlite3
-from pathlib import Path
 import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -45,7 +45,7 @@ class MemoryStore:
 
     @staticmethod
     def _now() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return datetime.now(UTC).isoformat()
 
     def put(
         self,
@@ -64,7 +64,17 @@ class MemoryStore:
         item = MemoryItem(uuid.uuid4().hex, kind, key, value, confidence, source, now, now, expires_at)
         self._db.execute(
             "INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (item.id, item.kind, item.key, json.dumps(item.value, ensure_ascii=False), item.confidence, item.source, item.created_at, item.updated_at, item.expires_at),
+            (
+                item.id,
+                item.kind,
+                item.key,
+                json.dumps(item.value, ensure_ascii=False),
+                item.confidence,
+                item.source,
+                item.created_at,
+                item.updated_at,
+                item.expires_at,
+            ),
         )
         self._db.commit()
         return item
@@ -101,8 +111,14 @@ class MemoryStore:
 
     def _from_row(self, row: tuple[object, ...]) -> MemoryItem:
         return MemoryItem(
-            id=str(row[0]), kind=str(row[1]), key=str(row[2]), value=json.loads(str(row[3])),
-            confidence=float(row[4]), source=str(row[5]), created_at=str(row[6]), updated_at=str(row[7]),
+            id=str(row[0]),
+            kind=str(row[1]),
+            key=str(row[2]),
+            value=json.loads(str(row[3])),
+            confidence=float(row[4]),
+            source=str(row[5]),
+            created_at=str(row[6]),
+            updated_at=str(row[7]),
             expires_at=str(row[8]) if row[8] else None,
         )
 
