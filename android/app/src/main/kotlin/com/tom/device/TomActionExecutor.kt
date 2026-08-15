@@ -33,8 +33,13 @@ class TomActionExecutor(
             "open_url" -> request.url?.let(service::openUrl) ?: false
             "search_google" -> request.url?.let(service::openUrl) ?: false
             "open_intent_uri" -> request.intentUri?.let(service::openIntentUri) ?: false
-            "compose_email" -> service.composeEmail(request.text, null, null)
-            "compose_sms" -> request.text?.let { service.composeSms(request.url ?: "", it) } ?: false
+            "open_calendar" -> service.openCalendar()
+            "create_calendar_event" -> request.text?.let { title ->
+                request.startMillis != null && request.endMillis != null &&
+                    service.createCalendarEvent(title, request.startMillis, request.endMillis, request.location, request.body)
+            } ?: false
+            "compose_email" -> service.composeEmail(request.recipient, request.subject, request.body ?: request.text)
+            "compose_sms" -> request.recipient?.let { service.composeSms(it, request.body ?: request.text) } ?: false
             else -> false
         }
 
@@ -50,7 +55,8 @@ class TomActionExecutor(
     companion object {
         private val CONSEQUENT_ACTIONS = setOf(
             "send_message", "send_email", "send_sms", "send_form", "purchase", "payment", "book",
-            "cancel_booking", "delete", "account_change", "publish", "share_sensitive_data", "compose_email", "compose_sms",
+            "cancel_booking", "delete", "account_change", "publish", "share_sensitive_data", "compose_email",
+            "compose_sms", "create_calendar_event",
         )
     }
 }
