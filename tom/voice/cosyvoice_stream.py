@@ -66,11 +66,17 @@ class CosyVoiceStreamingAdapter:
         import numpy as np
 
         model = self._load()
-        ref_audio = self._ref_audio(voice)
+        ref_path = self._ref_audio(voice)
+        try:
+            from cosyvoice.utils.file_utils import load_wav
+        except ImportError as exc:
+            raise RuntimeError("CosyVoice load_wav helper is unavailable") from exc
+
+        prompt_speech_16k = load_wav(ref_path, 16000)
         outputs = model.inference_instruct2(
             text,
             self._instruction(style),
-            ref_audio,
+            prompt_speech_16k,
             stream=True,
             speed=style.speaking_rate,
             text_frontend=True,
