@@ -96,18 +96,9 @@ class PCM16ProsodyExtractor:
         voiced_ratio = len(voiced) / max(1, len(frames))
         speech_rate_proxy = voiced_ratio * (1.0 + min(1.0, pitch_var / 60.0))
         confidence = sum(f.pitch_confidence for f in voiced) / len(voiced) if voiced else 0.0
-        return UserProsody(
-            mean_pitch_hz=mean_pitch,
-            pitch_range_hz=pitch_range,
-            energy=energy,
-            energy_variation=energy_var,
-            pitch_variation=pitch_var,
-            speech_rate_proxy=speech_rate_proxy,
-            pitch_confidence=confidence,
-            likely_question=False,
-            likely_excited=pitch_var > 35.0 and energy_var > 0.035,
-            likely_tired_or_calm=pitch_var < 10.0 and energy_var < 0.012 and voiced_ratio > 0.25,
-        )
+        return UserProsody(mean_pitch, pitch_range, energy, energy_var, pitch_var, speech_rate_proxy,
+                           confidence, False, pitch_var > 35.0 and energy_var > 0.035,
+                           pitch_var < 10.0 and energy_var < 0.012 and voiced_ratio > 0.25)
 
 
 class ExpressiveSpeechPlanner:
@@ -144,5 +135,5 @@ class ExpressiveSpeechPlanner:
         denominator = max(1, n - 1)
         pitch = tuple(base_pitch + (0.06 * math.sin(i / denominator * math.pi * 2)) * intensity for i in range(n))
         energy = tuple(max(0.0, min(1.0, 0.35 + intensity * 0.45 + 0.08 * math.sin(i / denominator * math.pi))) for i in range(n))
-        rate = tuple(max(0.65, min(1.35, speaking_rate * (1.0 - 0.04 * math.sin(i / denominator * math.pi))) for i in range(n))
+        rate = tuple(max(0.65, min(1.35, speaking_rate * (1.0 - 0.04 * math.sin(i / denominator * math.pi)))) for i in range(n))
         return ExpressivePlan(tuple(sorted(cues, key=lambda c: c.position)), pitch, energy, rate, tuple(rationale))
