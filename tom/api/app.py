@@ -23,7 +23,7 @@ from tom.providers import OpenAICompatibleLLM
 from tom.response import FriendlyFallback, ModelResponder
 from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry
-from tom.voice import VOICES
+from tom.voice.models import VOICE_PROFILES
 
 app = FastAPI(title="TOM Agent Runtime", version="0.7.0")
 profile = CompanionProfile()
@@ -54,8 +54,6 @@ app.state.tom_device_auth = device_auth
 app.state.tom_bridge_events = asyncio.Queue(maxsize=512)
 android_bridge = install_android_bridge(app)
 
-# A real vision model is enabled only when explicitly configured. TOM never
-# falls back to fabricated detections.
 vision_base_url = os.getenv("TOM_VISION_BASE_URL", "").strip()
 vision_model = os.getenv("TOM_VISION_MODEL", "").strip()
 vision_key = os.getenv("TOM_VISION_API_KEY", "")
@@ -98,7 +96,9 @@ async def capabilities() -> dict:
         ],
         "model_runtime": settings.llm_enabled,
         "vision_runtime": vision_runtime is not None,
-        "voice_profiles": [voice.id for voice in VOICES],
+        "voice_profiles": list(VOICE_PROFILES),
+        "voice_languages": ["hi", "en", "hinglish", "bn"],
+        "voice_engine": bool(os.getenv("TOM_TTS_COMMAND", "").strip()),
         "device_capabilities": device_capabilities.describe(),
         "communication_adapters": [],
         "tools": tools.describe(),
