@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TOM Live Activity</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">TOM CORE</div>
+        <h1>Live Activity</h1>
+      </div>
+      <div id="connection" class="status offline">● Offline</div>
+    </header>
+
+    <section class="task-card">
+      <label for="taskId">Task ID</label>
+      <div class="task-row">
+        <input id="taskId" placeholder="conversation / task id" autocomplete="off" />
+        <button id="connect">Connect</button>
+      </div>
+      <p id="taskGoal">Waiting for Core task events…</p>
+    </section>
+
+    <section class="timeline" id="timeline" aria-live="polite"></section>
+  </main>
+  <script src="./app.js" defer></script>
+</body>
+</html>

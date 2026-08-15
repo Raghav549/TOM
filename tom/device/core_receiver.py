@@ -3,49 +3,75 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 from tom.perception.pipeline import MultimodalRuntime
 
 
 @dataclass
 class PendingObservation:
-    payload: dict
+    payload: dict[str, Any]
     image: bytes | None = None
 
 
 class CoreBridgeReceiver:
-    """Core-side receiver for Android UI observations and screenshot chunks."""
+    """Reconstruct Android screenshots and bind multimodal decisions to task/action IDs."""
 
-    def __init__(self, perception: MultimodalRuntime, on_plan: Callable[[dict, object], Awaitable[None]] | None = None) -> None:
+    def __init__(
+        self,
+        perception: MultimodalRuntime,
+        on_plan: Callable[[dict, object], Awaitable[None]] | None = None,
+        on_result: Callable[[dict], Awaitable[None]] | None = None,
+    ) -> None:
         self.perception = perception
         self.on_plan = on_plan
+        self.on_result = on_result
         self.pending: dict[str, PendingObservation] = {}
+        self._aliases: dict[str, str] = {}
+
+    @staticmethod
+    def _key(payload: dict[str, Any]) -> str:
+        task_id = str(payload.get("task_id") or "").strip()
+        action_id = str(payload.get("action_id") or "").strip()
+        if task_id and action_id:
+            return f"{task_id}:{action_id}"
+        return str(payload.get("observation_id") or payload.get("request_id") or payload.get("transfer_id") or "")
 
     async def receive(self, message: str) -> dict | None:
         envelope = json.loads(message)
         message_type = envelope.get("type")
         payload = envelope.get("payload") or envelope
+
         if message_type == "screenshot_chunk":
             image = self.perception.accept_screenshot_chunk(payload)
-            if image is not None:
-                request_id = str(payload.get("request_id", payload.get("transfer_id", "")))
-                pending = self.pending.get(request_id)
-                if pending is None and len(self.pending) == 1:
-                    # Safe compatibility path for older Android clients that did
-                    # not echo request_id. Never guess when multiple observations
-                    # are concurrently waiting for screenshots.
-                    pending_id, pending = next(iter(self.pending.items()))
-                    request_id = pending_id
-                if pending:
-                    pending.image = image
-                    return await self._run(self.pending.pop(request_id))
-            return None
+            if image is None:
+                return None
+            key = self._key(payload)
+            key = self._aliases.get(key, key)
+            pending = self.pending.get(key)
+            if pending is None and len(self.pending) == 1:
+                # Compatibility fallback for older Android clients with no task/action echo.
+                key, pending = next(iter(self.pending.items()))
+            if pending is None:
+                return None
+            pending.image = image
+            result = await self._run(self.pending.pop(key))
+            self._drop_aliases(key)
+            return result
+
         if message_type == "observation":
             snapshot = payload.get("snapshot") or payload.get("observation") or payload
-            observation_id = str(payload.get("observation_id") or snapshot.get("observation_id") or payload.get("request_id") or snapshot.get("timestamp_ms") or "")
+            observation_id = str(
+                payload.get("observation_id")
+                or snapshot.get("observation_id")
+                or payload.get("request_id")
+                or snapshot.get("timestamp_ms")
+                or ""
+            )
             if not observation_id:
                 raise ValueError("observation_id required")
             from tom.perception.multimodal_observation import MultimodalObservation, UiNode
+
             nodes: list[UiNode] = []
             self._flatten_android_tree(snapshot.get("tree"), nodes, "root")
             for node in snapshot.get("nodes", []):
@@ -63,9 +89,25 @@ class CoreBridgeReceiver:
                 package_name=snapshot.get("package") or snapshot.get("package_name"),
                 window_id=snapshot.get("window_id"), nodes=tuple(nodes), frame=None,
             )
-            self.pending[observation_id] = PendingObservation({"observation": mm, "intent": str(payload.get("intent") or snapshot.get("intent") or "")})
+            key = self._key(payload) or observation_id
+            self.pending[key] = PendingObservation({
+                "observation": mm,
+                "intent": str(payload.get("intent") or snapshot.get("intent") or ""),
+                "task_id": str(payload.get("task_id") or ""),
+                "action_id": str(payload.get("action_id") or ""),
+                "observation_id": observation_id,
+            })
+            self._aliases[observation_id] = key
+            request_id = str(payload.get("request_id") or "")
+            if request_id:
+                self._aliases[request_id] = key
             return None
         return None
+
+    def _drop_aliases(self, key: str) -> None:
+        for alias, target in list(self._aliases.items()):
+            if target == key:
+                self._aliases.pop(alias, None)
 
     def _flatten_android_tree(self, tree: dict | None, output: list, path: str) -> None:
         if not isinstance(tree, dict):
@@ -89,11 +131,22 @@ class CoreBridgeReceiver:
             raise ValueError("screenshot required for multimodal decision")
         decision = await self.perception.decide(observation, pending.image, intent)
         result = {
+            "task_id": pending.payload.get("task_id") or None,
+            "action_id": pending.payload.get("action_id") or None,
             "observation_id": decision.observation_id,
             "visual_model": decision.visual.model,
             "regions": [region.__dict__ for region in decision.visual.regions],
             "plan": decision.plan.__dict__ if decision.plan else None,
+            "state": decision.state.__dict__,
+            "delta": decision.delta.__dict__,
+            "verification": {
+                "status": "verified" if decision.delta.changed else "failed",
+                "confidence": 1.0 if decision.delta.changed else 0.0,
+                "evidence": list(decision.delta.reasons) or ["post_action_state_unchanged"],
+            },
         }
         if self.on_plan:
             await self.on_plan(result, decision.plan)
+        if self.on_result:
+            await self.on_result(result)
         return result

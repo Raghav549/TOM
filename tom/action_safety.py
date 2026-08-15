@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from .models import Risk, ToolCall
 
@@ -16,7 +16,7 @@ class PreconditionResult:
 class ActionPreconditionChecker:
     """Fail-closed checks before an action reaches a real device/provider."""
 
-    REQUIRED_ARGUMENTS: dict[str, tuple[str, ...]] = {
+    REQUIRED_ARGUMENTS: ClassVar[dict[str, tuple[str, ...]]] = {
         "device_tap_node": ("node_id",),
         "device_set_text": ("node_id", "text"),
         "device_swipe": ("x1", "y1", "x2", "y2"),
@@ -28,7 +28,7 @@ class ActionPreconditionChecker:
         "device_upi_payment": ("pa", "pn", "am"),
     }
 
-    CONSEQUENTIAL: frozenset[Risk] = frozenset({Risk.HIGH, Risk.CRITICAL})
+    CONSEQUENTIAL: ClassVar[frozenset[Risk]] = frozenset({Risk.HIGH, Risk.CRITICAL})
 
     def check(self, call: ToolCall, *, observed_state: dict[str, Any] | None = None) -> PreconditionResult:
         args = dict(call.arguments)
