@@ -24,6 +24,9 @@ data class ActionRequest(
     val action: String,
     val targetNodeId: String? = null,
     val text: String? = null,
+    val recipient: String? = null,
+    val subject: String? = null,
+    val body: String? = null,
     val url: String? = null,
     val packageName: String? = null,
     val intentUri: String? = null,
@@ -34,6 +37,9 @@ data class ActionRequest(
     val endY: Float? = null,
     val durationMs: Long? = null,
     val longPressMs: Long? = null,
+    val startMillis: Long? = null,
+    val endMillis: Long? = null,
+    val location: String? = null,
 ) : TomBridgeMessage
 
 data class ActionResult(
