@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import html
+import hmac
 import os
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -28,7 +30,7 @@ from tom.memory import MemoryStore
 from tom.models import AgentRequest
 from tom.perception.pipeline import MultimodalRuntime
 from tom.perception.vision_runtime import OpenAICompatibleVisionAdapter, VisionRuntimeConfig
-from tom.permissions import PermissionPolicy, Decision
+from tom.permissions import Decision, PermissionPolicy
 from tom.planner import ModelPlanner, RulePlanner
 from tom.production import ProductionReadiness
 from tom.providers import OpenAICompatibleLLM
@@ -158,11 +160,11 @@ PROVISIONABLE_CREDENTIALS: dict[str, set[str]] = {
 credential_bearer = HTTPBearer(auto_error=False)
 
 
-def require_credential_provisioner(auth: HTTPAuthorizationCredentials | None = Depends(credential_bearer)) -> None:
+def require_credential_provisioner(auth: HTTPAuthorizationCredentials | None = Depends(credential_bearer)) -> None:  # noqa: B008
     expected = os.getenv("TOM_CREDENTIAL_PROVISION_TOKEN", "").strip()
     if not expected:
         raise HTTPException(status_code=503, detail="credential provisioning is disabled; configure TOM_CREDENTIAL_PROVISION_TOKEN")
-    if auth is None or auth.scheme.lower() != "bearer" or not auth.credentials or not __import__("hmac").compare_digest(auth.credentials, expected):
+    if auth is None or auth.scheme.lower() != "bearer" or not auth.credentials or not hmac.compare_digest(auth.credentials, expected):
         raise HTTPException(status_code=401, detail="invalid credential provisioning token")
 
 
@@ -203,13 +205,13 @@ async def google_connect() -> RedirectResponse:
 @app.get("/v1/integrations/google/callback", response_class=HTMLResponse)
 async def google_callback(code: str | None = None, state: str | None = None, error: str | None = None) -> HTMLResponse:
     if error:
-        message = f"Google authorization was not completed: {html.escape(error)}"
+        message = html.escape(f"Google authorization was not completed: {error}")
         return HTMLResponse(f"<!doctype html><html><body><h2>TOM</h2><p>{message}</p><script>window.close()</script></body></html>", status_code=400)
     if not code or not state:
         return HTMLResponse("<!doctype html><html><body><h2>TOM</h2><p>Missing Google OAuth callback parameters.</p></body></html>", status_code=400)
     try:
         result = await google_oauth.exchange(code, state)
-    except Exception as exc:  # callback boundary: return safe browser-facing error
+    except (RuntimeError, ValueError, httpx.HTTPError) as exc:
         message = html.escape(str(exc))
         return HTMLResponse(f"<!doctype html><html><body><h2>TOM</h2><p>Google connection failed.</p><p>{message}</p></body></html>", status_code=400)
     web_origin = html.escape(os.getenv("TOM_WEB_ORIGIN", "http://localhost"), quote=True)
@@ -229,11 +231,7 @@ async def credential_status() -> dict[str, object]:
     for provider in providers:
         value = credentials.get(provider) or {}
         items[provider] = {"configured": bool(value), "fields": sorted(value.keys())}
-    return {
-        "vault": {"configured": bool(os.getenv("TOM_CREDENTIAL_MASTER_KEY", "").strip()), "path": "credentials.enc"},
-        "providers": items,
-        "google": google_oauth.status(),
-    }
+    return {"vault": {"configured": bool(os.getenv("TOM_CREDENTIAL_MASTER_KEY", "").strip()), "path": "credentials.enc"}, "providers": items, "google": google_oauth.status()}
 
 
 @app.post("/v1/credentials", dependencies=[Depends(require_credential_provisioner)])
@@ -267,12 +265,7 @@ async def delete_credentials(provider: str) -> dict[str, object]:
 
 @app.get("/v1/public-apis")
 async def public_apis() -> dict[str, object]:
-    return {
-        "source": "public-apis/public-apis",
-        "catalog": public_api_catalog(),
-        "executable": executable_catalog(),
-        "policy": "The upstream repository is discovery-only. Only typed, tested adapters are executable.",
-    }
+    return {"source": "public-apis/public-apis", "catalog": public_api_catalog(), "executable": executable_catalog(), "policy": "The upstream repository is discovery-only. Only typed, tested adapters are executable."}
 
 
 @app.get("/v1/capabilities")
