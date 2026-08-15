@@ -2,27 +2,28 @@ package com.tom.device
 
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
 
-/**
- * In-process event stream. A transport adapter can forward these events to TOM Core.
- * The stream is intentionally bounded to avoid flooding the model with duplicate UI events.
- */
+/** In-process event stream. A transport adapter can forward events to TOM Core. */
 class TomEventStream {
-    private val _events = MutableSharedFlow<TomUiEvent>(extraBufferCapacity = 64)
-    val events: SharedFlow<TomUiEvent> = _events
+    private val listeners = mutableSetOf<(TomUiEvent) -> Unit>()
+
+    fun addListener(listener: (TomUiEvent) -> Unit) {
+        listeners += listener
+    }
+
+    fun removeListener(listener: (TomUiEvent) -> Unit) {
+        listeners -= listener
+    }
 
     fun emit(event: AccessibilityEvent, root: AccessibilityNodeInfo?) {
         val snapshot = root?.let(TomUiSnapshot::fromRoot)
-        _events.tryEmit(
-            TomUiEvent(
-                type = event.eventType,
-                packageName = event.packageName?.toString(),
-                className = event.className?.toString(),
-                snapshot = snapshot,
-            ),
+        val item = TomUiEvent(
+            type = event.eventType,
+            packageName = event.packageName?.toString(),
+            className = event.className?.toString(),
+            snapshot = snapshot,
         )
+        listeners.toList().forEach { it(item) }
     }
 }
 
