@@ -28,6 +28,8 @@ class ToolRegistry:
             tool = self.tools[call.name]
         except KeyError as exc:
             raise KeyError(f"unknown tool: {call.name}") from exc
+        if tool.risk is not call.risk:
+            raise PermissionError(f"tool risk mismatch: {call.name}")
         return tool
 
     def describe(self) -> list[dict[str, Any]]:
