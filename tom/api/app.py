@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Response
+from pydantic import BaseModel, Field
 
 from tom.api.bridge_server import install_android_bridge
 from tom.api.device_ws import build_device_websocket
@@ -23,7 +23,10 @@ from tom.providers import OpenAICompatibleLLM
 from tom.response import FriendlyFallback, ModelResponder
 from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry
+from tom.voice.director import ConversationSignals
+from tom.voice.engine import ExternalCommandSpeechEngine, SpeechEngineConfig
 from tom.voice.models import VOICE_PROFILES
+from tom.voice.session import VoiceSession
 
 app = FastAPI(title="TOM Agent Runtime", version="0.7.0")
 profile = CompanionProfile()
@@ -66,6 +69,8 @@ if vision_base_url and vision_model:
 if vision_runtime is not None:
     app.include_router(build_device_websocket(vision_runtime))
 
+voice_session = VoiceSession(ExternalCommandSpeechEngine(SpeechEngineConfig()))
+
 
 class ProfileUpdate(BaseModel):
     name: str | None = None
@@ -78,6 +83,18 @@ class ProfileUpdate(BaseModel):
 class ApprovalRequest(BaseModel):
     conversation_id: str
     tool_index: int
+
+
+class VoiceSynthesisRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    voice_id: str = "tom_m1"
+    situation: str = ""
+    urgency: float = Field(default=0.0, ge=0.0, le=1.0)
+    task_running: bool = False
+    task_succeeded: bool = False
+    task_failed: bool = False
+    user_is_sad: bool = False
+    user_is_excited: bool = False
 
 
 @app.get("/health")
@@ -104,6 +121,29 @@ async def capabilities() -> dict:
         "tools": tools.describe(),
         "note": "Only configured adapters are executable; TOM never simulates unavailable capabilities.",
     }
+
+
+@app.post("/v1/voice/synthesize")
+async def synthesize_voice(request: VoiceSynthesisRequest) -> Response:
+    try:
+        turn = voice_session.prepare_turn(
+            request.text,
+            voice_id=request.voice_id,
+            signals=ConversationSignals(
+                user_text=request.text,
+                situation=request.situation,
+                urgency=request.urgency,
+                task_running=request.task_running,
+                task_succeeded=request.task_succeeded,
+                task_failed=request.task_failed,
+                user_is_sad=request.user_is_sad,
+                user_is_excited=request.user_is_excited,
+            ),
+        )
+        audio = voice_session.synthesize(turn)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return Response(content=audio, media_type="audio/wav")
 
 
 @app.get("/v1/device/capabilities")
