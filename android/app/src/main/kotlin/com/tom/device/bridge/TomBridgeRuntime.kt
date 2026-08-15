@@ -36,6 +36,13 @@ class TomBridgeRuntime(
         }
     }
 
+    fun sendObservation(snapshot: String) {
+        sendEnvelope("observation", JSONObject().apply {
+            put("snapshot", JSONObject(snapshot))
+            put("source", "android_accessibility")
+        })
+    }
+
     private fun handleAction(envelope: JSONObject) {
         val payload = envelope.optJSONObject("payload") ?: envelope
         val actionId = payload.optString("action_id").takeIf { it.isNotBlank() } ?: return
@@ -57,6 +64,7 @@ class TomBridgeRuntime(
             "global_back" -> service.back()
             "global_home" -> service.home()
             "global_recents" -> service.recents()
+            "tap" -> service.tap(args.optDouble("x").toFloat(), args.optDouble("y").toFloat())
             "swipe" -> service.swipe(
                 args.optDouble("x1").toFloat(), args.optDouble("y1").toFloat(),
                 args.optDouble("x2").toFloat(), args.optDouble("y2").toFloat(),
