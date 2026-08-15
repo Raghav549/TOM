@@ -9,19 +9,34 @@ from tom.config import settings
 from tom.memory import MemoryStore
 from tom.models import AgentRequest
 from tom.permissions import PermissionPolicy
-from tom.planner import RulePlanner
+from tom.planner import ModelPlanner, RulePlanner
+from tom.providers import OpenAICompatibleLLM
+from tom.response import FriendlyFallback, ModelResponder
 from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry
 from tom.voice import VOICES
 
-app = FastAPI(title="TOM Agent Runtime", version="0.3.0")
+app = FastAPI(title="TOM Agent Runtime", version="0.4.0")
 profile = CompanionProfile()
+tools = ToolRegistry({})
+fallback_planner = RulePlanner()
+fallback_responder = FriendlyFallback()
+
+if settings.llm_enabled:
+    llm = OpenAICompatibleLLM(settings.llm_base_url, settings.llm_api_key, settings.llm_model)
+    planner = ModelPlanner(llm, fallback_planner)
+    responder = ModelResponder(llm, fallback_responder)
+else:
+    planner = fallback_planner
+    responder = fallback_responder
+
 runtime = AgentRuntime(
-    RulePlanner(),
-    ToolRegistry({}),
+    planner,
+    tools,
     MemoryStore(str(settings.data_dir)),
     ApprovalGate(settings.approval_required),
     PermissionPolicy(),
+    responder,
 )
 
 
@@ -40,17 +55,19 @@ class ApprovalRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "tom", "version": "0.3.0"}
+    return {"status": "ok", "service": "tom", "version": "0.4.0"}
 
 
 @app.get("/v1/capabilities")
 async def capabilities() -> dict:
     return {
-        "core": ["planning", "memory", "approval", "event_stream"],
+        "core": ["planning", "structured_tool_calls", "tool_discovery", "execution_verification", "memory", "approval", "event_stream", "natural_response"],
+        "model_runtime": settings.llm_enabled,
         "voice_profiles": [voice.id for voice in VOICES],
         "device_adapters": [],
         "communication_adapters": [],
-        "note": "Adapters are intentionally empty until configured; TOM never simulates unavailable capabilities.",
+        "tools": tools.describe(),
+        "note": "Only configured adapters are executable; TOM never simulates unavailable capabilities.",
     }
 
 
