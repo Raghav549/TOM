@@ -70,6 +70,7 @@ app.state.tom_bridge_events = asyncio.Queue(maxsize=512)
 live_events = LiveEventStream()
 app.state.tom_live_events = live_events
 live_tasks = LiveTaskBridge(planner, runtime.events_bus)
+
 google_oauth = register_public_api_tools(tools, credentials)
 app.state.tom_credentials = credentials
 app.state.tom_google_oauth = google_oauth
@@ -263,3 +264,147 @@ async def delete_credentials(provider: str) -> dict[str, object]:
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"provider": provider, "configured": False}
+
+
+@app.get("/v1/public-apis")
+async def public_apis() -> dict[str, object]:
+    return {"source": "public-apis/public-apis", "catalog": public_api_catalog(), "executable": executable_catalog(), "policy": "The upstream repository is discovery-only. Only typed, tested adapters are executable."}
+
+
+@app.get("/v1/capabilities")
+async def capabilities() -> dict:
+    return {
+        "core": [
+            "planning", "structured_tool_calls", "tool_discovery", "execution_verification", "memory", "approval",
+            "event_stream", "core_task_event_stream", "natural_response", "device_capability_discovery", "android_websocket_bridge",
+            "real_android_action_tools", "correlated_post_action_verification", "real_public_api_tools", "public_api_catalog",
+            "credential_vault", "credential_provisioning_api", "google_oauth_browser_flow", "visible_browser_action_engine",
+            "multimodal_perception", "screenshot_chunk_reassembly", "semantic_visual_fusion",
+            "screen_state_fingerprinting", "screen_change_detection", "multimodal_action_verification", "live_re_grounding", "live_replanning",
+            "ocr_fallback_contract", "live_full_duplex_voice", "android_continuous_pcm_stream", "neural_vad", "streaming_asr",
+            "partial_transcripts", "learned_turn_prediction", "continuous_prosody_state", "voice_barge_in", "partial_tts_cancellation", "streaming_tts",
+            "production_readiness", "integration_registry", "correlated_verification_waiters",
+        ],
+        "model_runtime": settings.llm_enabled,
+        "vision_runtime": vision_runtime is not None,
+        "voice_profiles": list(VOICE_PROFILES),
+        "voice_languages": ["hi", "en", "hinglish", "bn"],
+        "voice_engine": bool(os.getenv("TOM_TTS_COMMAND", "").strip()),
+        "streaming_voice_engine": bool(os.getenv("TOM_COSYVOICE_MODEL_DIR", "").strip()),
+        "asr_engine": bool(os.getenv("TOM_ASR_MODEL", "").strip()),
+        "neural_vad": os.getenv("TOM_NEURAL_VAD", "1").lower() not in {"0", "false", "no"},
+        "learned_turn_prediction": bool(os.getenv("TOM_TURN_MODEL_PATH", "").strip()),
+        "device_capabilities": device_capabilities.describe(),
+        "communication_adapters": ["communication.sms_send"],
+        "browser_capabilities": ["open", "snapshot", "click", "click_text", "fill", "fill_label", "press", "back"],
+        "tools": tools.describe(),
+        "note": "Only configured adapters are executable; TOM never simulates unavailable capabilities.",
+    }
+
+
+@app.websocket("/v1/events/ws")
+async def live_events_websocket(websocket: WebSocket) -> None:
+    await websocket.accept()
+    task_id = websocket.query_params.get("task_id")
+    try:
+        after = int(websocket.query_params.get("after", "0"))
+    except ValueError:
+        after = 0
+    queue, replay = await live_events.subscribe(task_id=task_id, after=after)
+    try:
+        for event in replay:
+            await websocket.send_json(event.as_dict())
+        while True:
+            event = await queue.get()
+            if task_id and event.task_id not in {None, task_id}:
+                continue
+            await websocket.send_json(event.as_dict())
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await live_events.unsubscribe(queue)
+
+
+@app.post("/v1/voice/synthesize")
+async def synthesize_voice(request: VoiceSynthesisRequest) -> Response:
+    try:
+        turn = voice_session.prepare_turn(request.text, voice_id=request.voice_id, signals=ConversationSignals(
+            user_text=request.text, situation=request.situation, urgency=request.urgency,
+            task_running=request.task_running, task_succeeded=request.task_succeeded,
+            task_failed=request.task_failed, user_is_sad=request.user_is_sad, user_is_excited=request.user_is_excited,
+        ))
+        audio = voice_session.synthesize(turn)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return Response(content=audio, media_type="audio/wav")
+
+
+@app.get("/v1/device/capabilities")
+async def device_capability_status() -> dict:
+    return {"capabilities": device_capabilities.describe()}
+
+
+@app.get("/v1/device/sessions")
+async def device_sessions() -> dict:
+    return {"connected_devices": sorted(android_bridge.sessions)}
+
+
+@app.get("/v1/tasks/{task_id}")
+async def task_state(task_id: str) -> dict:
+    state = runtime.task_state(task_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return state
+
+
+@app.get("/v1/profile")
+async def get_profile() -> dict:
+    return {"name": profile.name, "interests": sorted(profile.interests), "style": profile.style, "language": profile.language, "commentary_enabled": profile.commentary_enabled}
+
+
+@app.put("/v1/profile")
+async def update_profile(update: ProfileUpdate) -> dict:
+    if update.name is not None:
+        profile.name = update.name.strip() or "Tom"
+    if update.interests is not None:
+        profile.set_interests(update.interests)
+    if update.style is not None:
+        profile.style = update.style
+    if update.language is not None:
+        profile.language = update.language
+    if update.commentary_enabled is not None:
+        profile.commentary_enabled = update.commentary_enabled
+    return await get_profile()
+
+
+@app.post("/v1/agent")
+async def agent(request: AgentRequest):
+    response = await runtime.handle(request)
+    goal = str(request.message)
+    device_id = str(request.context.get("device_id", "")).strip()
+    if device_id:
+        live_tasks.bind(request.conversation_id, goal, device_id)
+        await live_events.publish("task.started", {"goal": goal, "device_id": device_id}, task_id=request.conversation_id)
+    for event in response.events:
+        await live_events.publish(event.get("type", "task.event"), event, task_id=request.conversation_id)
+    return response
+
+
+@app.get("/v1/approvals/{conversation_id}")
+async def pending_approvals(conversation_id: str):
+    return {"conversation_id": conversation_id, "items": runtime.pending(conversation_id)}
+
+
+@app.post("/v1/approval")
+async def approve(request: ApprovalRequest):
+    try:
+        return await runtime.approve_and_execute(request.conversation_id, request.tool_index)
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (PermissionError, RuntimeError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@app.get("/v1/memory/{conversation_id}")
+async def memory(conversation_id: str):
+    return {"conversation_id": conversation_id, "items": runtime.memory.recent(conversation_id)}
