@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
+from dataclasses import dataclass
 
 from .multimodal_observation import UiNode
 from .visual_adapter import VisualAnalysis
@@ -62,15 +62,17 @@ class PerceptionFusion:
             score = self._semantic_score(intent, node)
             if score >= 0.25:
                 label = node.text or node.content_description or node.class_name or "UI element"
-                candidates.append(FusedTarget(
-                    node_id=node.node_id,
-                    label=label,
-                    bounds=node.bounds,
-                    semantic_score=score,
-                    visual_score=0.0,
-                    fused_score=min(1.0, 0.75 * score),
-                    evidence=("accessibility",),
-                ))
+                candidates.append(
+                    FusedTarget(
+                        node_id=node.node_id,
+                        label=label,
+                        bounds=node.bounds,
+                        semantic_score=score,
+                        visual_score=0.0,
+                        fused_score=min(1.0, 0.75 * score),
+                        evidence=("accessibility",),
+                    )
+                )
 
         # Visual fallback / corroboration.
         for region in visual.regions:
@@ -85,25 +87,29 @@ class PerceptionFusion:
             semantic = min(1.0, best_iou)
             if best is not None:
                 fused = 0.65 * region.confidence + 0.35 * semantic
-                candidates.append(FusedTarget(
-                    node_id=best.node_id,
-                    label=region.label,
-                    bounds=best.bounds,
-                    semantic_score=semantic,
-                    visual_score=region.confidence,
-                    fused_score=fused,
-                    evidence=("vision", "accessibility_overlap"),
-                ))
+                candidates.append(
+                    FusedTarget(
+                        node_id=best.node_id,
+                        label=region.label,
+                        bounds=best.bounds,
+                        semantic_score=semantic,
+                        visual_score=region.confidence,
+                        fused_score=fused,
+                        evidence=("vision", "accessibility_overlap"),
+                    )
+                )
             else:
-                candidates.append(FusedTarget(
-                    node_id=None,
-                    label=region.label,
-                    bounds=region.bounds,
-                    semantic_score=0.0,
-                    visual_score=region.confidence,
-                    fused_score=0.60 * region.confidence,
-                    evidence=("vision_fallback",),
-                ))
+                candidates.append(
+                    FusedTarget(
+                        node_id=None,
+                        label=region.label,
+                        bounds=region.bounds,
+                        semantic_score=0.0,
+                        visual_score=region.confidence,
+                        fused_score=0.60 * region.confidence,
+                        evidence=("vision_fallback",),
+                    )
+                )
 
         # De-duplicate the same semantic target, retaining the strongest evidence.
         by_node: dict[str, FusedTarget] = {}
