@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from tom.api.bridge_server import install_android_bridge
+from tom.api.device_ws import build_device_websocket
 from tom.approval import ApprovalGate
 from tom.companion import CompanionProfile
 from tom.config import settings
@@ -14,6 +16,8 @@ from tom.device_capabilities import DeviceCapabilityRegistry
 from tom.memory import MemoryStore
 from tom.models import AgentRequest
 from tom.permissions import PermissionPolicy
+from tom.perception.pipeline import MultimodalRuntime
+from tom.perception.vision_runtime import OpenAICompatibleVisionAdapter, VisionRuntimeConfig
 from tom.planner import ModelPlanner, RulePlanner
 from tom.providers import OpenAICompatibleLLM
 from tom.response import FriendlyFallback, ModelResponder
@@ -21,7 +25,7 @@ from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry
 from tom.voice import VOICES
 
-app = FastAPI(title="TOM Agent Runtime", version="0.6.0")
+app = FastAPI(title="TOM Agent Runtime", version="0.7.0")
 profile = CompanionProfile()
 tools = ToolRegistry({})
 device_capabilities = DeviceCapabilityRegistry.android_baseline()
@@ -50,6 +54,20 @@ app.state.tom_device_auth = device_auth
 app.state.tom_bridge_events = asyncio.Queue(maxsize=512)
 android_bridge = install_android_bridge(app)
 
+# A real vision model is enabled only when explicitly configured. TOM never
+# falls back to fabricated detections.
+vision_base_url = os.getenv("TOM_VISION_BASE_URL", "").strip()
+vision_model = os.getenv("TOM_VISION_MODEL", "").strip()
+vision_key = os.getenv("TOM_VISION_API_KEY", "")
+vision_runtime = None
+if vision_base_url and vision_model:
+    vision_runtime = MultimodalRuntime(OpenAICompatibleVisionAdapter(
+        VisionRuntimeConfig(vision_base_url, vision_key, vision_model)
+    ))
+
+if vision_runtime is not None:
+    app.include_router(build_device_websocket(vision_runtime))
+
 
 class ProfileUpdate(BaseModel):
     name: str | None = None
@@ -66,7 +84,7 @@ class ApprovalRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "tom", "version": "0.6.0"}
+    return {"status": "ok", "service": "tom", "version": "0.7.0"}
 
 
 @app.get("/v1/capabilities")
@@ -76,8 +94,10 @@ async def capabilities() -> dict:
             "planning", "structured_tool_calls", "tool_discovery",
             "execution_verification", "memory", "approval", "event_stream",
             "natural_response", "device_capability_discovery", "android_websocket_bridge",
+            "multimodal_perception", "screenshot_chunk_reassembly", "semantic_visual_fusion",
         ],
         "model_runtime": settings.llm_enabled,
+        "vision_runtime": vision_runtime is not None,
         "voice_profiles": [voice.id for voice in VOICES],
         "device_capabilities": device_capabilities.describe(),
         "communication_adapters": [],
