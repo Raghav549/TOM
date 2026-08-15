@@ -25,6 +25,7 @@ class AndroidDeviceTool:
         task_id = str(arguments.get("task_id") or uuid4())
         approval = arguments.get("approval_token")
         action_arguments = {key: value for key, value in arguments.items() if key not in {"device_id", "task_id", "approval_token"}}
+        action_arguments = self._normalize(action_arguments)
 
         result = await self.hub.request_action(
             device_id=device_id,
@@ -40,6 +41,14 @@ class AndroidDeviceTool:
         if observation is None:
             return {"ok": False, "action": self.action, "result": result, "verification": None, "error": "post_action_observation_timeout"}
         return {"ok": True, "action": self.action, "result": result, "verification": observation}
+
+    def _normalize(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        result = dict(arguments)
+        if self.name == "device_search_google" and result.get("query"):
+            result["url"] = f"https://www.google.com/search?q={quote_plus(str(result.pop('query')))}"
+        elif self.name == "device_maps_search" and result.get("query"):
+            result["url"] = f"https://www.google.com/maps/search/?api=1&query={quote_plus(str(result.pop('query')))}"
+        return result
 
 
 def register_android_tools(registry: ToolRegistry, hub: AndroidBridgeHub) -> None:
@@ -66,13 +75,3 @@ def register_android_tools(registry: ToolRegistry, hub: AndroidBridgeHub) -> Non
     ]
     for name, description, action, risk in specs:
         registry.register(AndroidDeviceTool(name, description, action, risk, hub))
-
-
-async def prepare_android_arguments(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Normalize high-level convenience arguments into bridge-native arguments."""
-    result = dict(arguments)
-    if tool_name == "device_search_google" and result.get("query"):
-        result["url"] = f"https://www.google.com/search?q={quote_plus(str(result.pop('query')))}"
-    elif tool_name == "device_maps_search" and result.get("query"):
-        result["url"] = f"https://www.google.com/maps/search/?api=1&query={quote_plus(str(result.pop('query')))}"
-    return result
