@@ -23,10 +23,16 @@ async def _get(url: str, *, params: dict[str, Any] | None = None, headers: dict[
         return response.json()
 
 
-def _required_env(name: str) -> str:
+def _env(name: str) -> str | None:
     value = os.getenv(name, "").strip()
+    return value or None
+
+
+def _credential(credentials: CredentialManager | None, provider: str, field: str, env_name: str) -> str:
+    stored = credentials.get(provider) if credentials else None
+    value = str((stored or {}).get(field, "")).strip() or _env(env_name)
     if not value:
-        raise RuntimeError(f"provider credential not configured: {name}")
+        raise RuntimeError(f"provider credential not configured: {env_name}")
     return value
 
 
@@ -198,12 +204,13 @@ class DogImageTool:
 
 @dataclass
 class AviationstackTool:
+    credentials: CredentialManager | None = None
     name: str = "api.flights"
     risk: Risk = Risk.READ
-    description: str = "Query aviation/flight data when TOM_AVIATIONSTACK_KEY is configured."
+    description: str = "Query aviation/flight data from the configured credential vault."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        key = _required_env("TOM_AVIATIONSTACK_KEY")
+        key = _credential(self.credentials, "aviationstack", "api_key", "TOM_AVIATIONSTACK_KEY")
         params = {k: v for k, v in arguments.items() if k in {"flight_date", "dep_iata", "arr_iata", "flight_status", "limit"}}
         params["access_key"] = key
         return await _get("https://api.aviationstack.com/v1/flights", params=params)
@@ -211,45 +218,45 @@ class AviationstackTool:
 
 @dataclass
 class MarketstackTool:
+    credentials: CredentialManager | None = None
     name: str = "api.stocks"
     risk: Risk = Risk.READ
-    description: str = "Query stock market data when TOM_MARKETSTACK_KEY is configured."
+    description: str = "Query stock market data from the configured credential vault."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return await _get("https://api.marketstack.com/v1/eod/latest", params={"access_key": _required_env("TOM_MARKETSTACK_KEY"), "symbols": str(arguments["symbol"]).upper()})
+        return await _get("https://api.marketstack.com/v1/eod/latest", params={"access_key": _credential(self.credentials, "marketstack", "api_key", "TOM_MARKETSTACK_KEY"), "symbols": str(arguments["symbol"]).upper()})
 
 
 @dataclass
 class SerpstackTool:
+    credentials: CredentialManager | None = None
     name: str = "api.search"
     risk: Risk = Risk.READ
-    description: str = "Search-engine results when TOM_SERPSTACK_KEY is configured."
+    description: str = "Search engine results from the configured credential vault."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
         query = str(arguments["query"]).strip()
         if not query:
             raise ValueError("query is required")
-        return await _get("https://api.serpstack.com/search", params={"access_key": _required_env("TOM_SERPSTACK_KEY"), "query": query})
+        return await _get("https://api.serpstack.com/search", params={"access_key": _credential(self.credentials, "serpstack", "api_key", "TOM_SERPSTACK_KEY"), "query": query})
 
 
 @dataclass
 class MailboxlayerTool:
+    credentials: CredentialManager | None = None
     name: str = "api.email_validate"
     risk: Risk = Risk.READ
-    description: str = "Validate an email address when TOM_MAILBOXLAYER_KEY is configured."
+    description: str = "Validate email using the configured credential vault."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
         email = str(arguments["email"]).strip()
         if not email or len(email) > 320:
             raise ValueError("valid email is required")
-        return await _get("https://apilayer.net/api/check", params={"access_key": _required_env("TOM_MAILBOXLAYER_KEY"), "email": email})
+        return await _get("https://apilayer.net/api/check", params={"access_key": _credential(self.credentials, "mailboxlayer", "api_key", "TOM_MAILBOXLAYER_KEY"), "email": email})
 
 
-def register_public_api_tools(registry: ToolRegistry) -> None:
-    for tool in (OpenMeteoWeatherTool(), NominatimGeocodeTool(), FrankfurterCurrencyTool(), NagerHolidayTool(), RestCountriesTool(), OpenLibraryBooksTool(), WorldTimeTool(), HackerNewsTool(), CoinGeckoPriceTool(), GitHubSearchTool(), SpaceXLaunchTool(), CatFactTool(), DogImageTool(), AviationstackTool(), MarketstackTool(), SerpstackTool(), MailboxlayerTool()):
+def register_public_api_tools(registry: ToolRegistry, credentials: CredentialManager | None = None) -> None:
+    credentials = credentials or CredentialManager(__import__("tom.config", fromlist=["settings"]).settings.data_dir)
+    for tool in (OpenMeteoWeatherTool(), NominatimGeocodeTool(), FrankfurterCurrencyTool(), NagerHolidayTool(), RestCountriesTool(), OpenLibraryBooksTool(), WorldTimeTool(), HackerNewsTool(), CoinGeckoPriceTool(), GitHubSearchTool(), SpaceXLaunchTool(), CatFactTool(), DogImageTool(), AviationstackTool(credentials), MarketstackTool(credentials), SerpstackTool(credentials), MailboxlayerTool(credentials)):
         registry.register(tool)
-    # These adapters are part of the same registry used by AgentRuntime, so
-    # planner-generated calls execute through the normal policy/approval/
-    # verification pipeline rather than a discovery-only side channel.
-    credentials = CredentialManager(__import__("tom.config", fromlist=["settings"]).settings.data_dir)
     register_integration_tools(registry, credentials)
