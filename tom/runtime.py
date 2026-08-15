@@ -40,6 +40,22 @@ class AgentRuntime:
         context["memory"] = self.memory.recent(request.conversation_id)
         context["available_tools"] = self.tools.describe()
         plan = await self.planner.plan(request.message, context)
+
+        if plan.needs_clarification:
+            question = plan.clarification_question.strip() or "Which option do you want me to use?"
+            events = [{"type": "clarification.required", "question": question}]
+            await self.events_bus.publish(
+                "clarification.required",
+                {"task_id": request.conversation_id, "goal": request.message, "question": question},
+            )
+            self.memory.add(request.conversation_id, "assistant", question, {"clarification": True})
+            return AgentResponse(
+                conversation_id=request.conversation_id,
+                reply=question,
+                plan=plan,
+                events=events,
+            )
+
         task = TaskState(
             request.conversation_id,
             plan.goal,
