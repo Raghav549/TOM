@@ -59,7 +59,6 @@ class TomLiveBridgeController(
         }
         val result = actionExecutor.execute(request)
         socket?.sendActionAck(result.actionId, result.completed, result.error)
-        // The ACK is never treated as success by Core. Request a fresh state immediately.
         sendObservation(envelope.copy(type = "OBSERVATION_REQUEST"))
     }
 
@@ -90,13 +89,16 @@ class TomLiveBridgeController(
     }
 
     private fun sendObservationRequestResult() {
-        sendObservation(
-            TomLiveEnvelope("OBSERVATION_REQUEST", deviceId, "pending", 0, UUID.randomUUID().toString(), JSONObject())
-        )
+        sendObservation(TomLiveEnvelope("OBSERVATION_REQUEST", deviceId, "pending", 0, UUID.randomUUID().toString(), JSONObject()))
     }
 
-    private fun serialize(node: android.view.accessibility.AccessibilityNodeInfo?, id: String, depth: Int, budget: Int): JSONObject {
-        if (node == null) return JSONObject.NULL as JSONObject
+    private fun serialize(
+        node: android.view.accessibility.AccessibilityNodeInfo?,
+        id: String,
+        depth: Int,
+        budget: Int,
+    ): JSONObject {
+        if (node == null) return JSONObject().put("available", false)
         val bounds = android.graphics.Rect().also { node.getBoundsInScreen(it) }
         val out = JSONObject()
             .put("node_id", id)
