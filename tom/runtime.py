@@ -8,6 +8,7 @@ from .memory import MemoryStore
 from .models import AgentRequest, AgentResponse, ToolCall, ToolResult
 from .permissions import Decision, PermissionPolicy
 from .planner import Planner
+from .response import FriendlyFallback, Responder
 from .tools import ToolRegistry
 
 
@@ -18,6 +19,7 @@ class AgentRuntime:
     memory: MemoryStore
     approvals: ApprovalGate
     policy: PermissionPolicy = field(default_factory=PermissionPolicy)
+    responder: Responder = field(default_factory=FriendlyFallback)
     _pending: dict[str, list[ToolCall]] = field(default_factory=dict)
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
@@ -39,20 +41,17 @@ class AgentRuntime:
             if decision is Decision.DENY:
                 events.append({"type": "tool.denied", "tool": call.name, "risk": call.risk.value})
                 continue
-            result = await self._execute(call, events)
-            results.append(result)
+            results.append(await self._execute(call, events))
 
         if pending:
             self._pending[request.conversation_id] = pending
-            reply = "I’ve got the next step ready. Want me to go ahead?"
-        elif results and all(item.success for item in results):
-            reply = "Done bhai. I completed the available steps."
-        elif results:
-            reply = "I finished what I could, but one or more steps need attention."
-        else:
-            reply = "I understood you, but there’s no configured tool for that yet."
-
-        self.memory.add(request.conversation_id, "assistant", reply, {"events": events, "results": [item.model_dump() for item in results]})
+        reply = await self.responder.respond(user_message=request.message, events=events, context=context)
+        self.memory.add(
+            request.conversation_id,
+            "assistant",
+            reply,
+            {"events": events, "results": [item.model_dump() for item in results]},
+        )
         return AgentResponse(
             conversation_id=request.conversation_id,
             reply=reply,
@@ -81,8 +80,9 @@ class AgentRuntime:
         del calls[tool_index]
         if not calls:
             self._pending.pop(conversation_id, None)
-        self.memory.add(conversation_id, "assistant", "Done bhai.", {"events": events, "result": result.model_dump()})
-        return {"tool": call.name, "result": result.model_dump(), "events": events}
+        reply = await self.responder.respond(user_message="approved action", events=events, context={})
+        self.memory.add(conversation_id, "assistant", reply, {"events": events, "result": result.model_dump()})
+        return {"tool": call.name, "result": result.model_dump(), "reply": reply, "events": events}
 
     async def _execute(self, call: ToolCall, events: list[dict[str, Any]]) -> ToolResult:
         try:
