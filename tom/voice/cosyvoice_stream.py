@@ -18,6 +18,7 @@ class CosyVoiceStreamingAdapter:
 
     def __init__(self, model_dir: str | None = None) -> None:
         self.model_dir = model_dir or os.getenv("TOM_COSYVOICE_MODEL_DIR", "")
+        self.version = os.getenv("TOM_COSYVOICE_VERSION", "3").strip()
         self._model = None
         self._sample_rate = 24000
 
@@ -27,12 +28,13 @@ class CosyVoiceStreamingAdapter:
         if not self.model_dir:
             raise RuntimeError("TOM_COSYVOICE_MODEL_DIR is not configured")
         try:
-            from cosyvoice.cli.cosyvoice import CosyVoice2
+            from cosyvoice.cli.cosyvoice import CosyVoice2, CosyVoice3
         except ImportError as exc:
             raise RuntimeError(
                 "CosyVoice is not installed. Install the official CosyVoice runtime first."
             ) from exc
-        self._model = CosyVoice2(self.model_dir, load_jit=True, fp16=True)
+        model_cls = CosyVoice3 if self.version == "3" else CosyVoice2
+        self._model = model_cls(self.model_dir, load_jit=True, fp16=True)
         self._sample_rate = int(self._model.sample_rate)
         return self._model
 
