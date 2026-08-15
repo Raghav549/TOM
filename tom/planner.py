@@ -4,8 +4,6 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from pydantic import ValidationError
-
 from .models import Plan, Risk, ToolCall
 
 
@@ -44,7 +42,8 @@ class ModelPlanner:
                 "role": "system",
                 "content": (
                     "You are TOM's planning engine. Return ONLY valid JSON matching "
-                    '{"goal": string, "steps": [{"name": string, "arguments": object, "risk": "read|low|high|critical"}], "explanation": string}. '
+                    '{"goal": string, "steps": [{"name": string, "arguments": object, '
+                    '"risk": "read|low|high|critical"}], "explanation": string}. '
                     "Use only tools listed in available_tools. Never invent a tool. "
                     "Sending messages, purchases, deletion, account/security changes are high or critical. "
                     "Do not execute anything; only create the plan."
