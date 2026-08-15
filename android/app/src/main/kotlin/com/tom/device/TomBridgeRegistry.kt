@@ -21,7 +21,7 @@ object TomBridgeRegistry {
 
     fun isConnected(): Boolean = runtime?.isConnected() == true
 
-    fun publishObservation(snapshot: String) {
-        runtime?.sendObservation(snapshot)
+    fun publishObservation(snapshot: String, taskId: String? = null, actionId: String? = null) {
+        runtime?.sendObservation(snapshot, taskId, actionId)
     }
 }
