@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-import numpy as np
-
 
 @dataclass(frozen=True)
 class VADDecision:
@@ -15,23 +13,13 @@ class VADDecision:
 
 
 class SileroStreamingVAD:
-    """Real Silero VAD state machine for 16 kHz PCM16 streams.
+    """Real Silero VAD state machine for 16 kHz PCM16 streams."""
 
-    The model is loaded lazily. There is deliberately no fake neural fallback:
-    if neural VAD is enabled but unavailable, the runtime reports the error.
-    """
-
-    def __init__(
-        self,
-        threshold: float | None = None,
-        min_speech_ms: int = 160,
-        min_silence_ms: int = 420,
-    ) -> None:
+    def __init__(self, threshold: float | None = None, min_speech_ms: int = 160, min_silence_ms: int = 420) -> None:
         self.threshold = threshold if threshold is not None else float(os.getenv("TOM_VAD_THRESHOLD", "0.55"))
         self.min_speech_ms = min_speech_ms
         self.min_silence_ms = min_silence_ms
         self._model = None
-        self._state = None
         self._speech_ms = 0
         self._silence_ms = 0
         self._in_speech = False
@@ -42,16 +30,13 @@ class SileroStreamingVAD:
         try:
             from silero_vad import load_silero_vad
         except ImportError as exc:
-            raise RuntimeError(
-                "Silero VAD is not installed. Install TOM with '.[voice-neural]'."
-            ) from exc
+            raise RuntimeError("Silero VAD is not installed. Install TOM with '.[voice-neural]'.") from exc
         self._model = load_silero_vad()
 
     def reset(self) -> None:
         self._speech_ms = 0
         self._silence_ms = 0
         self._in_speech = False
-        self._state = None
 
     def process(self, pcm16: bytes, sample_rate: int = 16_000) -> VADDecision:
         if sample_rate != 16_000:
@@ -59,13 +44,13 @@ class SileroStreamingVAD:
         if not pcm16:
             return VADDecision(0.0, self._in_speech, False, False)
         self._load()
+        import numpy as np
+        import torch
+
         audio = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
         if audio.size == 0:
             return VADDecision(0.0, self._in_speech, False, False)
-        import torch
-
-        tensor = torch.from_numpy(audio)
-        probability = float(self._model(tensor, 16_000).item())
+        probability = float(self._model(torch.from_numpy(audio), 16_000).item())
         frame_ms = max(1, int(audio.size * 1000 / sample_rate))
         start = False
         end = False
