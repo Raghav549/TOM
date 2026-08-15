@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import pytest
 
 from tom.agent_events import AgentEventBus
@@ -41,12 +39,6 @@ def test_live_context_observation_and_action_lifecycle() -> None:
     assert snapshot["last_error"] == "stale screen"
 
 
-@dataclass
-class _Dummy:
-    value: str = "ok"
-
-
 def test_event_payload_is_not_mutated_by_bus() -> None:
-    # Regression guard for callers reusing their payload dict.
     original = {"task_id": "t1"}
     assert original == {"task_id": "t1"}
