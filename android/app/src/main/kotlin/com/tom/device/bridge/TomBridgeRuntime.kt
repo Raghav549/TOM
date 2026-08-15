@@ -87,18 +87,31 @@ class TomBridgeRuntime(
     }
 
     private fun captureScreenshot(envelope: JSONObject) {
-        val requestId = envelope.optString("request_id").ifBlank { UUID.randomUUID().toString() }
+        val payload = envelope.optJSONObject("payload") ?: envelope
+        val requestId = payload.optString("request_id").ifBlank { UUID.randomUUID().toString() }
+        val taskId = payload.optString("task_id").takeIf { it.isNotBlank() }
+        val actionId = payload.optString("action_id").takeIf { it.isNotBlank() }
         TomLiveActivityStore.add("vision", "Capturing screen", "Fresh screenshot requested for grounding")
         screenshotCapture.capture { result ->
-            result.onSuccess { payload ->
-                screenshotChunker.encode(payload).forEach { chunk ->
-                    sendEnvelope("screenshot_chunk", JSONObject(chunk).apply { put("request_id", requestId) })
+            result.onSuccess { screenshot ->
+                screenshotChunker.encode(screenshot).forEach { chunk ->
+                    sendEnvelope("screenshot_chunk", JSONObject(chunk).apply {
+                        put("request_id", requestId)
+                        taskId?.let { put("task_id", it) }
+                        actionId?.let { put("action_id", it) }
+                    })
                 }
-                sendEnvelope("screenshot_complete", JSONObject().apply { put("request_id", requestId) })
+                sendEnvelope("screenshot_complete", JSONObject().apply {
+                    put("request_id", requestId)
+                    taskId?.let { put("task_id", it) }
+                    actionId?.let { put("action_id", it) }
+                })
                 TomLiveActivityStore.add("vision", "Screen sent", "Screenshot delivered to TOM Core")
             }.onFailure { error ->
                 sendEnvelope("screenshot_error", JSONObject().apply {
                     put("request_id", requestId)
+                    taskId?.let { put("task_id", it) }
+                    actionId?.let { put("action_id", it) }
                     put("error", error.message ?: "capture_failed")
                 })
                 TomLiveActivityStore.add("error", "Screenshot failed", error.message ?: "capture failed")
@@ -116,11 +129,11 @@ class TomBridgeRuntime(
 
         TomLiveActivityStore.add("action", "Working", action)
         if (taskId.isBlank()) {
-            sendResult(actionId, false, "missing_task_id")
+            sendResult(taskId, actionId, false, "missing_task_id")
             return
         }
         if (action in CONSEQUENT_ACTIONS && approval.isNullOrBlank()) {
-            sendResult(actionId, false, "approval_required")
+            sendResult(taskId, actionId, false, "approval_required")
             TomLiveActivityStore.add("approval", "Confirmation required", action)
             return
         }
@@ -150,26 +163,12 @@ class TomBridgeRuntime(
         )
 
         val result = actionExecutor.execute(request)
-        sendResult(actionId, result.accepted, if (result.completed) "completed" else (result.error ?: "not_completed"))
+        sendResult(taskId, actionId, result.accepted, if (result.completed) "completed" else (result.error ?: "not_completed"))
         TomLiveActivityStore.add(
             if (result.completed) "verified_pending" else "action_failed",
             if (result.completed) "Action executed" else "Action failed",
             result.error ?: action,
         )
-
-        if (result.completed) {
-            sendEnvelope("observation_request", JSONObject().apply {
-                put("task_id", taskId)
-                put("action_id", actionId)
-                put("reason", "post_action_verification")
-            })
-            sendEnvelope("screenshot_request", JSONObject().apply {
-                put("request_id", UUID.randomUUID().toString())
-                put("task_id", taskId)
-                put("action_id", actionId)
-                put("reason", "post_action_verification")
-            })
-        }
     }
 
     private fun handleTaskEvent(payload: JSONObject) {
@@ -179,8 +178,9 @@ class TomBridgeRuntime(
         TomLiveActivityStore.add("task", title, detail, type.endsWith(".stopped"))
     }
 
-    private fun sendResult(actionId: String, accepted: Boolean, status: String) {
+    private fun sendResult(taskId: String, actionId: String, accepted: Boolean, status: String) {
         sendEnvelope("action_result", JSONObject().apply {
+            put("task_id", taskId)
             put("action_id", actionId)
             put("accepted", accepted)
             put("status", status)
