@@ -48,9 +48,7 @@ class TomBridgeRuntime(
                 "action_request" -> handleAction(envelope)
                 "screenshot_request" -> captureScreenshot(envelope)
                 "observation_request" -> captureObservation(envelope)
-                "voice_commentary" -> TomLiveActivityStore.add(
-                    "voice", "TOM", envelope.optJSONObject("payload")?.optString("text", "") ?: ""
-                )
+                "voice_commentary" -> TomLiveActivityStore.add("voice", "TOM", envelope.optJSONObject("payload")?.optString("text", "") ?: "")
                 "task_event" -> handleTaskEvent(envelope.optJSONObject("payload") ?: envelope)
                 "ping" -> sendEnvelope("pong", JSONObject())
                 "revoke" -> disconnect()
@@ -143,6 +141,9 @@ class TomBridgeRuntime(
             approvalToken = approval,
             action = action,
             targetNodeId = args.optString("node_id").takeIf { it.isNotBlank() },
+            targetText = args.optString("target_text").takeIf { it.isNotBlank() },
+            targetDescription = args.optString("target_description").takeIf { it.isNotBlank() },
+            targetViewId = args.optString("target_view_id").takeIf { it.isNotBlank() },
             text = args.optString("text").takeIf { it.isNotBlank() },
             recipient = args.optString("recipient").takeIf { it.isNotBlank() },
             subject = args.optString("subject").takeIf { it.isNotBlank() },
@@ -164,11 +165,7 @@ class TomBridgeRuntime(
 
         val result = actionExecutor.execute(request)
         sendResult(taskId, actionId, result.accepted, if (result.completed) "completed" else (result.error ?: "not_completed"))
-        TomLiveActivityStore.add(
-            if (result.completed) "verified_pending" else "action_failed",
-            if (result.completed) "Action executed" else "Action failed",
-            result.error ?: action,
-        )
+        TomLiveActivityStore.add(if (result.completed) "verified_pending" else "action_failed", if (result.completed) "Action executed" else "Action failed", result.error ?: action)
     }
 
     private fun handleTaskEvent(payload: JSONObject) {
@@ -208,10 +205,6 @@ class TomBridgeRuntime(
     }
 
     companion object {
-        private val CONSEQUENT_ACTIONS = setOf(
-            "send_message", "send_email", "send_sms", "send_form", "purchase", "payment", "book",
-            "cancel_booking", "delete", "account_change", "publish", "share_sensitive_data", "compose_email", "compose_sms",
-            "create_calendar_event",
-        )
+        private val CONSEQUENT_ACTIONS = setOf("send_message", "send_email", "send_sms", "send_form", "purchase", "payment", "book", "cancel_booking", "delete", "account_change", "publish", "share_sensitive_data", "compose_email", "compose_sms", "create_calendar_event")
     }
 }
