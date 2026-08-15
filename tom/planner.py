@@ -71,6 +71,11 @@ class ModelPlanner:
         payload = json.loads(text)
         plan = Plan.model_validate(payload)
         allowed = {item.get("name") for item in tools}
-        if allowed and any(step.name not in allowed for step in plan.steps):
+        if any(step.name not in allowed for step in plan.steps):
             raise ValueError("model returned an unavailable tool")
+        tool_risks = {item.get("name"): item.get("risk") for item in tools}
+        for step in plan.steps:
+            declared = tool_risks.get(step.name)
+            if declared and step.risk.value != declared:
+                raise ValueError(f"model risk mismatch for tool: {step.name}")
         return plan.model_copy(update={"goal": goal})
