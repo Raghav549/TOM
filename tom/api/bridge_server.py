@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 from tom.device.core_receiver import CoreBridgeReceiver
-from tom.live_events import LiveEventStream
+from tom.live_events import LiveEvent, LiveEventStream
 
 
 @dataclass
@@ -29,12 +29,21 @@ class AndroidBridgeHub:
         self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.event_stream = event_stream
         self.core_receiver = core_receiver
+        self._event_forwarder: asyncio.Task[None] | None = None
 
-    async def emit(self, event_type: str, payload: dict[str, Any], *, task_id: str | None = None) -> None:
-        if self.event_stream:
-            event = await self.event_stream.publish(event_type, payload, task_id=task_id)
-            target = str(payload.get("device_id") or "").strip()
-            if target:
+    async def _ensure_event_forwarder(self) -> None:
+        if self.event_stream and (self._event_forwarder is None or self._event_forwarder.done()):
+            self._event_forwarder = asyncio.create_task(self._forward_live_events())
+
+    async def _forward_live_events(self) -> None:
+        assert self.event_stream is not None
+        queue, _ = await self.event_stream.subscribe(after=0)
+        try:
+            while True:
+                event: LiveEvent = await queue.get()
+                target = str(event.payload.get("device_id") or "").strip()
+                if not target:
+                    continue
                 await self.send(target, {
                     "type": "task_event",
                     "message_id": secrets.token_urlsafe(12),
@@ -42,8 +51,17 @@ class AndroidBridgeHub:
                     "device_id": target,
                     "payload": event.as_dict(),
                 })
+        except asyncio.CancelledError:
+            raise
+        finally:
+            await self.event_stream.unsubscribe(queue)
+
+    async def emit(self, event_type: str, payload: dict[str, Any], *, task_id: str | None = None) -> None:
+        if self.event_stream:
+            await self.event_stream.publish(event_type, payload, task_id=task_id)
 
     async def attach(self, device_id: str, websocket: WebSocket) -> DeviceSession:
+        await self._ensure_event_forwarder()
         async with self.lock:
             old = self.sessions.get(device_id)
             if old:
@@ -70,8 +88,11 @@ class AndroidBridgeHub:
             session = self.sessions.get(device_id)
         if not session or not session.connected:
             return False
-        await session.websocket.send_text(json.dumps(message, separators=(",", ":")))
-        return True
+        try:
+            await session.websocket.send_text(json.dumps(message, separators=(",", ":")))
+            return True
+        except (RuntimeError, WebSocketDisconnect):
+            return False
 
     async def request_action(self, device_id: str, task_id: str, action: str, arguments: dict[str, Any], approval_token: str | None = None, timeout: float = 45.0) -> dict[str, Any]:
         action_id = secrets.token_urlsafe(18)
