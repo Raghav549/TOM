@@ -51,8 +51,6 @@ class AndroidBridgeHub:
                     "device_id": target,
                     "payload": event.as_dict(),
                 })
-        except asyncio.CancelledError:
-            raise
         finally:
             await self.event_stream.unsubscribe(queue)
 
@@ -186,7 +184,7 @@ async def _forward_to_core(hub: AndroidBridgeHub, message: dict[str, Any]) -> No
         return
     try:
         await hub.core_receiver.receive(json.dumps(message, separators=(",", ":")))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Core perception is an external model boundary.
         task_id = str((message.get("payload") or {}).get("task_id") or "") or None
         await hub.emit("verification.error", {"error": str(exc), "device_id": message.get("device_id", "")}, task_id=task_id)
 
