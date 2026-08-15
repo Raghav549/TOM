@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from dataclasses import dataclass
 from typing import Any
 
@@ -61,6 +62,8 @@ def install_android_bridge(app: Any) -> AndroidBridgeHub:
         await websocket.accept()
         session: DeviceSession | None = None
         try:
+            challenge = secrets.token_urlsafe(32)
+            await websocket.send_text(json.dumps({"type": "challenge", "challenge": challenge}, separators=(",", ":")))
             raw = await websocket.receive_text()
             hello = json.loads(raw)
             if hello.get("type") != "hello":
@@ -71,9 +74,9 @@ def install_android_bridge(app: Any) -> AndroidBridgeHub:
             if not device_id or hello.get("device_id") != device_id:
                 await websocket.close(code=1008, reason="invalid_device_identity")
                 return
-
-            # Enrollment/authentication is intentionally a separate trust layer.
-            # This socket endpoint never accepts a bare device ID as proof of identity.
+            if hello.get("challenge") != challenge:
+                await websocket.close(code=1008, reason="challenge_mismatch")
+                return
             if not app.state.tom_device_auth.verify_hello(device_id, hello):
                 await websocket.close(code=1008, reason="authentication_failed")
                 return
@@ -100,8 +103,6 @@ def install_android_bridge(app: Any) -> AndroidBridgeHub:
                     await websocket.close(code=1008, reason="device_identity_mismatch")
                     return
                 session.last_sequence = sequence
-                # Forwarding is deliberately explicit. TOM Core consumes these
-                # events and decides whether an action is warranted.
                 await app.state.tom_bridge_events.put(message)
         except WebSocketDisconnect:
             pass
