@@ -15,14 +15,12 @@ object TomGlassUi {
     private val green = Color.rgb(218, 247, 229)
     private val white = Color.rgb(255, 255, 255)
 
-    fun background(context: Context): View {
-        return View(context).apply {
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                intArrayOf(pink, white, green, Color.rgb(241, 235, 255))
-            )
-        }
-    }
+    fun plasmaBackground(): GradientDrawable = GradientDrawable(
+        GradientDrawable.Orientation.TL_BR,
+        intArrayOf(pink, white, green, Color.rgb(241, 235, 255), pink)
+    )
+
+    fun background(context: Context): View = View(context).apply { background = plasmaBackground() }
 
     fun glass(context: Context, radius: Float = 28f): GradientDrawable =
         GradientDrawable().apply {
