@@ -30,10 +30,12 @@ class TomWebSocketClient(
         fun onError(error: Throwable)
     }
 
-    private var socket: SSLSocket? = null
-    private var output: BufferedOutputStream? = null
+    @Volatile private var socket: SSLSocket? = null
+    @Volatile private var output: BufferedOutputStream? = null
     private val main = Handler(Looper.getMainLooper())
     private val random = SecureRandom()
+
+    fun isOpen(): Boolean = socket?.isClosed == false && output != null
 
     fun connect() {
         require(endpoint.startsWith("wss://")) { "TOM Android transport requires wss://" }
@@ -69,7 +71,7 @@ class TomWebSocketClient(
                 }
                 socket = ssl
                 output = out
-                // The server sends a fresh challenge as the first WebSocket message.
+                post { listener.onConnected() }
                 readLoop(input)
             } catch (t: Throwable) {
                 post { listener.onError(t) }
