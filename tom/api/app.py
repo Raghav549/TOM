@@ -27,6 +27,8 @@ from tom.permissions import PermissionPolicy, Decision
 from tom.planner import ModelPlanner, RulePlanner
 from tom.production import ProductionReadiness
 from tom.providers import OpenAICompatibleLLM
+from tom.public_api_catalog import catalog as public_api_catalog
+from tom.public_api_catalog import executable_catalog
 from tom.public_api_tools import register_public_api_tools
 from tom.response import FriendlyFallback, ModelResponder
 from tom.runtime import AgentRuntime
@@ -74,7 +76,6 @@ async def on_core_result(result: dict) -> None:
     task_id = str(result.get("task_id") or "")
     if task_id:
         await live_events.publish("verification.result", result, task_id=task_id)
-        # Resolve the exact pending Android action waiter before any re-plan.
         await android_bridge.resolve_verification(result)
         task_state = runtime.task_state(task_id) or {}
         goal = str(task_state.get("goal") or "")
@@ -85,20 +86,12 @@ async def on_core_result(result: dict) -> None:
         if bound:
             replanned = await live_tasks.on_verification(result, tools.describe())
             if replanned is not None:
-                await live_events.publish(
-                    "plan.replanned",
-                    {"steps": len(replanned.steps), "goal": replanned.goal, "reason": "multimodal_verification_failed"},
-                    task_id=task_id,
-                )
+                await live_events.publish("plan.replanned", {"steps": len(replanned.steps), "goal": replanned.goal, "reason": "multimodal_verification_failed"}, task_id=task_id)
                 for step in replanned.steps:
                     if not step.name.startswith("device_"):
                         continue
                     if runtime.policy.decide(step, approved=False) is not Decision.ALLOW:
-                        await live_events.publish(
-                            "replan.blocked",
-                            {"tool": step.name, "reason": "policy_or_approval_required"},
-                            task_id=task_id,
-                        )
+                        await live_events.publish("replan.blocked", {"tool": step.name, "reason": "policy_or_approval_required"}, task_id=task_id)
                         break
                     context = {"device_id": bound.device_id, "available_tools": tools.describe()}
                     await runtime._execute(step, [], context=context, conversation_id=task_id)
@@ -161,13 +154,23 @@ async def integrations() -> dict[str, object]:
     return {"integrations": integration_status(), "note": "Unconfigured providers are never executed."}
 
 
+@app.get("/v1/public-apis")
+async def public_apis() -> dict[str, object]:
+    return {
+        "source": "public-apis/public-apis",
+        "catalog": public_api_catalog(),
+        "executable": executable_catalog(),
+        "policy": "The upstream repository is discovery-only. Only typed, tested adapters are executable.",
+    }
+
+
 @app.get("/v1/capabilities")
 async def capabilities() -> dict:
     return {
         "core": [
             "planning", "structured_tool_calls", "tool_discovery", "execution_verification", "memory", "approval",
             "event_stream", "core_task_event_stream", "natural_response", "device_capability_discovery", "android_websocket_bridge",
-            "real_android_action_tools", "correlated_post_action_verification", "real_public_api_tools",
+            "real_android_action_tools", "correlated_post_action_verification", "real_public_api_tools", "public_api_catalog",
             "multimodal_perception", "screenshot_chunk_reassembly", "semantic_visual_fusion",
             "screen_state_fingerprinting", "screen_change_detection", "multimodal_action_verification", "live_re_grounding", "live_replanning",
             "ocr_fallback_contract", "live_full_duplex_voice", "android_continuous_pcm_stream", "neural_vad", "streaming_asr",
