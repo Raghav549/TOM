@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from .agent_events import AgentEventBus
 from .execution_context import LiveExecutionContext
-from .models import Plan, ToolCall, ToolResult
+from .models import Plan
 
 
 @dataclass
@@ -27,22 +28,36 @@ class LiveDeviceLoop:
     async def start(self, goal: str, *, memory: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Plan:
         self._running = True
         await self.event_bus.publish("task.started", {"task_id": self.context.task_id, "goal": goal})
-        plan = await self.planner.plan(goal, {
-            "memory": memory,
-            "available_tools": tools,
-            "live_state": self.context.snapshot(),
-        })
+        plan = await self.planner.plan(
+            goal,
+            {
+                "memory": memory,
+                "available_tools": tools,
+                "live_state": self.context.snapshot(),
+            },
+        )
         self._last_plan = plan
-        await self.event_bus.publish("plan.created", {
-            "task_id": self.context.task_id,
-            "steps": len(plan.steps),
-            "goal": plan.goal,
-        })
+        await self.event_bus.publish(
+            "plan.created",
+            {
+                "task_id": self.context.task_id,
+                "steps": len(plan.steps),
+                "goal": plan.goal,
+            },
+        )
         return plan
 
-    async def observation(self, *, package: str, url: str | None, fingerprint: str, source: str,
-                          task_id: str | None = None, action_id: str | None = None,
-                          summary: dict[str, Any] | None = None) -> None:
+    async def observation(
+        self,
+        *,
+        package: str,
+        url: str | None,
+        fingerprint: str,
+        source: str,
+        task_id: str | None = None,
+        action_id: str | None = None,
+        summary: dict[str, Any] | None = None,
+    ) -> None:
         if not self._running:
             return
         self.context.observe(package=package, url=url, fingerprint=fingerprint)
@@ -64,31 +79,40 @@ class LiveDeviceLoop:
         if not self._running:
             return
         self.context.action_finished(success, error)
-        await self.event_bus.publish("action.verified" if success else "action.failed", {
-            "task_id": self.context.task_id,
-            "action_id": action_id,
-            "success": success,
-            "error": error,
-        })
+        await self.event_bus.publish(
+            "action.verified" if success else "action.failed",
+            {
+                "task_id": self.context.task_id,
+                "action_id": action_id,
+                "success": success,
+                "error": error,
+            },
+        )
         if not success and self.commentary:
             await self.commentary("Ye step expected tarah nahi hua bhai; main dobara screen ground karke recover karta hoon.")
 
     async def replan(self, *, goal: str, memory: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Plan:
         if not self._running:
             raise RuntimeError("live loop is not running")
-        plan = await self.planner.plan(goal, {
-            "memory": memory,
-            "available_tools": tools,
-            "live_state": self.context.snapshot(),
-            "previous_plan": self._last_plan.model_dump() if self._last_plan else None,
-            "replan_reason": "fresh_observation",
-        })
+        plan = await self.planner.plan(
+            goal,
+            {
+                "memory": memory,
+                "available_tools": tools,
+                "live_state": self.context.snapshot(),
+                "previous_plan": self._last_plan.model_dump() if self._last_plan else None,
+                "replan_reason": "fresh_observation",
+            },
+        )
         self._last_plan = plan
-        await self.event_bus.publish("plan.replanned", {
-            "task_id": self.context.task_id,
-            "steps": len(plan.steps),
-            "reason": "fresh_observation",
-        })
+        await self.event_bus.publish(
+            "plan.replanned",
+            {
+                "task_id": self.context.task_id,
+                "steps": len(plan.steps),
+                "reason": "fresh_observation",
+            },
+        )
         return plan
 
     async def stop(self, reason: str = "completed") -> None:
