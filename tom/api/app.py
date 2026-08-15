@@ -29,7 +29,7 @@ from tom.voice.engine import ExternalCommandSpeechEngine, SpeechEngineConfig
 from tom.voice.models import VOICE_PROFILES
 from tom.voice.session import VoiceSession
 
-app = FastAPI(title="TOM Agent Runtime", version="0.8.0")
+app = FastAPI(title="TOM Agent Runtime", version="0.9.0")
 profile = CompanionProfile()
 tools = ToolRegistry({})
 device_capabilities = DeviceCapabilityRegistry.android_baseline()
@@ -44,15 +44,7 @@ else:
     planner = fallback_planner
     responder = fallback_responder
 
-runtime = AgentRuntime(
-    planner,
-    tools,
-    MemoryStore(str(settings.data_dir)),
-    ApprovalGate(settings.approval_required),
-    PermissionPolicy(),
-    responder,
-)
-
+runtime = AgentRuntime(planner, tools, MemoryStore(str(settings.data_dir)), ApprovalGate(settings.approval_required), PermissionPolicy(), responder)
 device_auth = DeviceAuthenticator()
 app.state.tom_device_auth = device_auth
 app.state.tom_bridge_events = asyncio.Queue(maxsize=512)
@@ -63,17 +55,12 @@ vision_model = os.getenv("TOM_VISION_MODEL", "").strip()
 vision_key = os.getenv("TOM_VISION_API_KEY", "")
 vision_runtime = None
 if vision_base_url and vision_model:
-    vision_runtime = MultimodalRuntime(OpenAICompatibleVisionAdapter(
-        VisionRuntimeConfig(vision_base_url, vision_key, vision_model)
-    ))
-
+    vision_runtime = MultimodalRuntime(OpenAICompatibleVisionAdapter(VisionRuntimeConfig(vision_base_url, vision_key, vision_model)))
 if vision_runtime is not None:
     app.include_router(build_device_websocket(vision_runtime))
 
-# Live voice is always wired into the API. Heavy ASR/TTS models are loaded lazily
-# only when /v1/voice/ws is actually used.
+# Live voice is always wired into the API. Heavy neural models load lazily on first use.
 app.include_router(build_live_voice_websocket(runtime))
-
 voice_session = VoiceSession(ExternalCommandSpeechEngine(SpeechEngineConfig()))
 
 
@@ -104,19 +91,19 @@ class VoiceSynthesisRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "tom", "version": "0.8.0"}
+    return {"status": "ok", "service": "tom", "version": "0.9.0"}
 
 
 @app.get("/v1/capabilities")
 async def capabilities() -> dict:
     return {
         "core": [
-            "planning", "structured_tool_calls", "tool_discovery",
-            "execution_verification", "memory", "approval", "event_stream",
-            "natural_response", "device_capability_discovery", "android_websocket_bridge",
+            "planning", "structured_tool_calls", "tool_discovery", "execution_verification", "memory", "approval",
+            "event_stream", "natural_response", "device_capability_discovery", "android_websocket_bridge",
             "multimodal_perception", "screenshot_chunk_reassembly", "semantic_visual_fusion",
-            "live_full_duplex_voice", "android_pcm_stream", "voice_barge_in",
-            "voice_prosody_analysis", "streaming_tts",
+            "live_full_duplex_voice", "android_continuous_pcm_stream", "neural_vad", "streaming_asr",
+            "partial_transcripts", "learned_turn_prediction", "continuous_prosody_state",
+            "voice_barge_in", "partial_tts_cancellation", "streaming_tts",
         ],
         "model_runtime": settings.llm_enabled,
         "vision_runtime": vision_runtime is not None,
@@ -125,6 +112,8 @@ async def capabilities() -> dict:
         "voice_engine": bool(os.getenv("TOM_TTS_COMMAND", "").strip()),
         "streaming_voice_engine": bool(os.getenv("TOM_COSYVOICE_MODEL_DIR", "").strip()),
         "asr_engine": bool(os.getenv("TOM_ASR_MODEL", "").strip()),
+        "neural_vad": os.getenv("TOM_NEURAL_VAD", "1").lower() not in {"0", "false", "no"},
+        "learned_turn_prediction": bool(os.getenv("TOM_TURN_MODEL_PATH", "").strip()),
         "device_capabilities": device_capabilities.describe(),
         "communication_adapters": [],
         "tools": tools.describe(),
@@ -135,20 +124,11 @@ async def capabilities() -> dict:
 @app.post("/v1/voice/synthesize")
 async def synthesize_voice(request: VoiceSynthesisRequest) -> Response:
     try:
-        turn = voice_session.prepare_turn(
-            request.text,
-            voice_id=request.voice_id,
-            signals=ConversationSignals(
-                user_text=request.text,
-                situation=request.situation,
-                urgency=request.urgency,
-                task_running=request.task_running,
-                task_succeeded=request.task_succeeded,
-                task_failed=request.task_failed,
-                user_is_sad=request.user_is_sad,
-                user_is_excited=request.user_is_excited,
-            ),
-        )
+        turn = voice_session.prepare_turn(request.text, voice_id=request.voice_id, signals=ConversationSignals(
+            user_text=request.text, situation=request.situation, urgency=request.urgency,
+            task_running=request.task_running, task_succeeded=request.task_succeeded,
+            task_failed=request.task_failed, user_is_sad=request.user_is_sad, user_is_excited=request.user_is_excited,
+        ))
         audio = voice_session.synthesize(turn)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -167,13 +147,7 @@ async def device_sessions() -> dict:
 
 @app.get("/v1/profile")
 async def get_profile() -> dict:
-    return {
-        "name": profile.name,
-        "interests": sorted(profile.interests),
-        "style": profile.style,
-        "language": profile.language,
-        "commentary_enabled": profile.commentary_enabled,
-    }
+    return {"name": profile.name, "interests": sorted(profile.interests), "style": profile.style, "language": profile.language, "commentary_enabled": profile.commentary_enabled}
 
 
 @app.put("/v1/profile")
