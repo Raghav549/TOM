@@ -67,10 +67,6 @@ class CosyVoiceStreamingAdapter:
 
         model = self._load()
         ref_audio = self._ref_audio(voice)
-        ref_text = os.getenv(f"TOM_COSYVOICE_REF_TEXT_{voice.id.upper()}", "").strip()
-        if not ref_text:
-            raise RuntimeError(f"Missing reference transcript for {voice.id}")
-
         outputs = model.inference_instruct2(
             text,
             self._instruction(style),
