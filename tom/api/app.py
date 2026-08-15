@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from tom.approval import ApprovalGate
 from tom.companion import CompanionProfile
 from tom.config import settings
+from tom.device_capabilities import DeviceCapabilityRegistry
 from tom.memory import MemoryStore
 from tom.models import AgentRequest
 from tom.permissions import PermissionPolicy
@@ -16,9 +17,10 @@ from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry
 from tom.voice import VOICES
 
-app = FastAPI(title="TOM Agent Runtime", version="0.4.0")
+app = FastAPI(title="TOM Agent Runtime", version="0.5.0")
 profile = CompanionProfile()
 tools = ToolRegistry({})
+device_capabilities = DeviceCapabilityRegistry.android_baseline()
 fallback_planner = RulePlanner()
 fallback_responder = FriendlyFallback()
 
@@ -55,20 +57,29 @@ class ApprovalRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "tom", "version": "0.4.0"}
+    return {"status": "ok", "service": "tom", "version": "0.5.0"}
 
 
 @app.get("/v1/capabilities")
 async def capabilities() -> dict:
     return {
-        "core": ["planning", "structured_tool_calls", "tool_discovery", "execution_verification", "memory", "approval", "event_stream", "natural_response"],
+        "core": [
+            "planning", "structured_tool_calls", "tool_discovery",
+            "execution_verification", "memory", "approval", "event_stream",
+            "natural_response", "device_capability_discovery",
+        ],
         "model_runtime": settings.llm_enabled,
         "voice_profiles": [voice.id for voice in VOICES],
-        "device_adapters": [],
+        "device_capabilities": device_capabilities.describe(),
         "communication_adapters": [],
         "tools": tools.describe(),
         "note": "Only configured adapters are executable; TOM never simulates unavailable capabilities.",
     }
+
+
+@app.get("/v1/device/capabilities")
+async def device_capability_status() -> dict:
+    return {"capabilities": device_capabilities.describe()}
 
 
 @app.get("/v1/profile")
