@@ -44,7 +44,7 @@ class BridgeEnvelope:
         sequence = obj.get("sequence")
         payload = obj.get("payload")
         if not isinstance(device_id, str) or not isinstance(session_id, str):
-            raise ValueError("missing bridge identity")
+            raise TypeError("missing bridge identity")
         if not isinstance(sequence, int) or sequence < 0 or not isinstance(payload, dict):
             raise ValueError("invalid bridge envelope fields")
         return BridgeEnvelope(obj["type"], device_id, session_id, sequence, obj.get("correlation_id"), payload)
