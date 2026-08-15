@@ -4,8 +4,6 @@ import os
 from dataclasses import dataclass
 from typing import Iterator
 
-import numpy as np
-
 from .models import Language, VoiceProfile, VoiceStyle
 
 
@@ -16,12 +14,7 @@ class TTSChunk:
 
 
 class CosyVoiceStreamingAdapter:
-    """Real CosyVoice2/3 streaming adapter.
-
-    Heavy model dependencies are optional. The adapter fails loudly when the
-    model/runtime is not installed instead of returning synthetic placeholders.
-    Configure TOM_COSYVOICE_MODEL_DIR and per-voice reference WAVs.
-    """
+    """Real CosyVoice2/3 streaming adapter with lazy heavy imports."""
 
     def __init__(self, model_dir: str | None = None) -> None:
         self.model_dir = model_dir or os.getenv("TOM_COSYVOICE_MODEL_DIR", "")
@@ -59,7 +52,7 @@ class CosyVoiceStreamingAdapter:
             f"Speak naturally and conversationally. Emotion: {style.emotion.value}. "
             f"Intensity: {style.intensity:.2f}. Warmth: {style.warmth:.2f}. "
             f"Speaking rate: {style.speaking_rate:.2f}. "
-            f"Use natural pauses and sentence-final prosody; never add random laughter or fillers."
+            "Use natural pauses and sentence-final prosody; never add random laughter or fillers."
         )
 
     def stream(
@@ -70,18 +63,17 @@ class CosyVoiceStreamingAdapter:
         voice: VoiceProfile,
         style: VoiceStyle,
     ) -> Iterator[TTSChunk]:
+        import numpy as np
+
         model = self._load()
         ref_audio = self._ref_audio(voice)
         ref_text = os.getenv(f"TOM_COSYVOICE_REF_TEXT_{voice.id.upper()}", "").strip()
         if not ref_text:
             raise RuntimeError(f"Missing reference transcript for {voice.id}")
 
-        # CosyVoice's current streaming inference yields tensor chunks while
-        # decoding, so Android can begin playback before the sentence ends.
-        instruction = self._instruction(style)
         outputs = model.inference_instruct2(
             text,
-            instruction,
+            self._instruction(style),
             ref_audio,
             stream=True,
             speed=style.speaking_rate,
