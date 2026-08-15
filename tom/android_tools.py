@@ -69,9 +69,11 @@ def register_android_tools(registry: ToolRegistry, hub: AndroidBridgeHub) -> Non
         ("device_home", "Go to Android home.", "home", Risk.LOW),
         ("device_recents", "Open Android recent apps.", "recents", Risk.LOW),
         ("device_maps_search", "Open a real map search on the device.", "open_url", Risk.LOW),
+        ("device_open_calendar", "Open the real Android calendar.", "open_calendar", Risk.LOW),
+        ("device_create_calendar_event", "Open the Android calendar event composer with exact event details. Requires confirmation.", "create_calendar_event", Risk.HIGH),
         ("device_upi_payment", "Open a UPI payment request. Requires exact user confirmation and provider-side verification.", "open_intent_uri", Risk.CRITICAL),
-        ("device_compose_email", "Open a real email composer with the supplied recipient/content.", "compose_email", Risk.HIGH),
-        ("device_compose_sms", "Open a real SMS composer with the supplied number/content.", "compose_sms", Risk.HIGH),
+        ("device_compose_email", "Open a real email composer with recipient, subject and body.", "compose_email", Risk.HIGH),
+        ("device_compose_sms", "Open a real SMS composer with recipient and body.", "compose_sms", Risk.HIGH),
     ]
     for name, description, action, risk in specs:
         registry.register(AndroidDeviceTool(name, description, action, risk, hub))
