@@ -57,9 +57,7 @@ class AndroidBridgeRuntime:
         if session is None or not session.connected:
             return False
         sequence = int(envelope.get("sequence", 0))
-        if not session.accept_sequence(sequence):
-            return False
-        return True
+        return session.accept_sequence(sequence)
 
     async def send_action(
         self,
