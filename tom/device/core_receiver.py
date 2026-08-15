@@ -14,7 +14,7 @@ class PendingObservation:
 
 
 class CoreBridgeReceiver:
-    """Framework-neutral Core receiver. WebSocket adapters call receive()."""
+    """Core-side receiver for Android UI observations and screenshot chunks."""
 
     def __init__(self, perception: MultimodalRuntime, on_plan: Callable[[dict, object], Awaitable[None]] | None = None) -> None:
         self.perception = perception
@@ -28,46 +28,55 @@ class CoreBridgeReceiver:
         if message_type == "screenshot_chunk":
             image = self.perception.accept_screenshot_chunk(payload)
             if image is not None:
-                observation_id = str(payload.get("observation_id", payload.get("transfer_id", "")))
-                pending = self.pending.get(observation_id)
+                request_id = str(payload.get("request_id", payload.get("transfer_id", "")))
+                pending = self.pending.get(request_id)
                 if pending:
                     pending.image = image
-                    return await self._run(pending)
+                    return await self._run(self.pending.pop(request_id))
             return None
         if message_type == "observation":
-            observation_id = str(payload.get("observation_id", ""))
+            snapshot = payload.get("snapshot") or payload.get("observation") or payload
+            observation_id = str(payload.get("observation_id") or snapshot.get("observation_id") or payload.get("request_id") or snapshot.get("timestamp_ms") or "")
             if not observation_id:
                 raise ValueError("observation_id required")
-            observation = payload.get("observation") or payload
-            from tom.perception.multimodal_observation import MultimodalObservation, UiNode, ScreenFrame
-            nodes = tuple(UiNode(
-                node_id=str(node["node_id"]),
-                class_name=node.get("class_name"),
-                text=node.get("text"),
-                content_description=node.get("content_description"),
-                bounds=tuple(node["bounds"]) if node.get("bounds") else None,
-                clickable=bool(node.get("clickable")),
-                editable=bool(node.get("editable")),
-                enabled=bool(node.get("enabled", True)),
-                password=bool(node.get("password")),
-            ) for node in observation.get("nodes", []))
-            frame_payload = observation.get("frame")
-            frame = ScreenFrame(**frame_payload) if frame_payload else None
+            from tom.perception.multimodal_observation import MultimodalObservation, UiNode
+            nodes: list[UiNode] = []
+            self._flatten_android_tree(snapshot.get("tree"), nodes, "root")
+            for node in snapshot.get("nodes", []):
+                if node.get("node_id"):
+                    nodes.append(UiNode(
+                        node_id=str(node["node_id"]),
+                        class_name=node.get("class_name"), text=node.get("text"),
+                        content_description=node.get("content_description"),
+                        bounds=tuple(node["bounds"]) if node.get("bounds") else None,
+                        clickable=bool(node.get("clickable")), editable=bool(node.get("editable")),
+                        enabled=bool(node.get("enabled", True)), password=bool(node.get("password")),
+                    ))
             mm = MultimodalObservation(
                 observation_id=observation_id,
-                captured_at=str(observation.get("captured_at", "")),
-                package_name=observation.get("package_name"),
-                window_id=observation.get("window_id"),
-                nodes=nodes,
-                frame=frame,
+                captured_at=str(snapshot.get("captured_at") or snapshot.get("timestamp_ms") or ""),
+                package_name=snapshot.get("package") or snapshot.get("package_name"),
+                window_id=snapshot.get("window_id"), nodes=tuple(nodes), frame=None,
             )
-            self.pending[observation_id] = PendingObservation({"observation": mm, "intent": str(payload.get("intent", ""))})
-            if frame_payload and frame_payload.get("inline_base64"):
-                import base64
-                self.pending[observation_id].image = base64.b64decode(frame_payload["inline_base64"], validate=True)
-                return await self._run(self.pending.pop(observation_id))
+            self.pending[observation_id] = PendingObservation({"observation": mm, "intent": str(payload.get("intent") or snapshot.get("intent") or "")})
             return None
         return None
+
+    def _flatten_android_tree(self, tree: dict | None, output: list, path: str) -> None:
+        if not isinstance(tree, dict):
+            return
+        from tom.perception.multimodal_observation import UiNode
+        bounds = tree.get("bounds")
+        parsed = tuple(bounds) if isinstance(bounds, list) and len(bounds) == 4 else None
+        output.append(UiNode(
+            node_id=str(tree.get("node_id") or tree.get("view_id") or path),
+            class_name=tree.get("class"), text=tree.get("text"),
+            content_description=tree.get("description"), bounds=parsed,
+            clickable=bool(tree.get("clickable")), editable=bool(tree.get("editable")),
+            enabled=bool(tree.get("enabled", True)), password=tree.get("text") == "[REDACTED]",
+        ))
+        for index, child in enumerate(tree.get("children") or []):
+            self._flatten_android_tree(child, output, f"{path}.{index}")
 
     async def _run(self, pending: PendingObservation) -> dict:
         observation = pending.payload["observation"]
