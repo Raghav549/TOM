@@ -18,6 +18,7 @@ class TomActionExecutor(
             "back" -> service.back()
             "home" -> service.home()
             "recents" -> service.recents()
+            "tap_node" -> request.targetNodeId?.let(service::clickNode) ?: false
             "tap" -> request.x != null && request.y != null && service.tap(request.x, request.y)
             "swipe" -> request.x != null && request.y != null && request.endX != null && request.endY != null &&
                 service.swipe(request.x, request.y, request.endX, request.endY, request.durationMs ?: 450L)
