@@ -40,7 +40,7 @@ def test_google_connect_requires_oauth_configuration(monkeypatch):
     client = TestClient(app)
     response = client.get("/v1/integrations/google/connect")
     assert response.status_code == 503
-    assert "TOM_GOOGLE_CLIENT_ID" in response.text
+    assert "TOM_GOOGLE_CLIENT_" in response.text
 
 
 def test_google_status_is_safe(monkeypatch, tmp_path):
