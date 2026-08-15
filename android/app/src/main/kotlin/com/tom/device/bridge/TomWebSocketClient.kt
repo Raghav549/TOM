@@ -9,23 +9,18 @@ import java.io.ByteArrayOutputStream
 import java.net.URI
 import java.security.SecureRandom
 import java.util.Base64
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 import kotlin.concurrent.thread
 
-/**
- * Minimal RFC 6455 text-frame client used by the Android companion.
- *
- * Production transport is WSS only. Certificate validation is delegated to the
- * platform TLS stack and the requested hostname is verified before the socket
- * is accepted. The client deliberately supports only the subset TOM needs:
- * text frames, ping/pong and close.
- */
+/** Minimal RFC 6455 WSS client for the TOM Android bridge. */
 class TomWebSocketClient(
     private val endpoint: String,
     private val deviceId: String,
-    private val sessionProof: String,
+    private val sharedSecret: ByteArray,
     private val listener: Listener,
 ) {
     interface Listener {
@@ -51,8 +46,7 @@ class TomWebSocketClient(
                 val ssl = factory.createSocket(host, port) as SSLSocket
                 ssl.useClientMode = true
                 ssl.startHandshake()
-                val session = ssl.session
-                require(HttpsURLConnection.getDefaultHostnameVerifier().verify(host, session)) {
+                require(HttpsURLConnection.getDefaultHostnameVerifier().verify(host, ssl.session)) {
                     "TLS hostname verification failed"
                 }
                 val key = ByteArray(16).also(random::nextBytes)
@@ -61,14 +55,10 @@ class TomWebSocketClient(
                     append(if (uri.rawPath.isNullOrEmpty()) "/" else uri.rawPath)
                     if (!uri.rawQuery.isNullOrEmpty()) append('?').append(uri.rawQuery)
                 }
-                val request = buildString {
-                    append("GET $path HTTP/1.1\r\n")
-                    append("Host: $host").append(if (uri.port > 0) ":$port" else "").append("\r\n")
-                    append("Upgrade: websocket\r\nConnection: Upgrade\r\n")
-                    append("Sec-WebSocket-Key: $wsKey\r\nSec-WebSocket-Version: 13\r\n")
-                    append("X-TOM-Device: ").append(deviceId).append("\r\n")
-                    append("X-TOM-Proof: ").append(sessionProof).append("\r\n\r\n")
-                }
+                val request = "GET $path HTTP/1.1\r\n" +
+                    "Host: $host${if (uri.port > 0) ":$port" else ""}\r\n" +
+                    "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
+                    "Sec-WebSocket-Key: $wsKey\r\nSec-WebSocket-Version: 13\r\n\r\n"
                 val out = BufferedOutputStream(ssl.outputStream)
                 out.write(request.toByteArray(Charsets.US_ASCII))
                 out.flush()
@@ -79,7 +69,7 @@ class TomWebSocketClient(
                 }
                 socket = ssl
                 output = out
-                post { listener.onConnected() }
+                // The server sends a fresh challenge as the first WebSocket message.
                 readLoop(input)
             } catch (t: Throwable) {
                 post { listener.onError(t) }
@@ -101,6 +91,27 @@ class TomWebSocketClient(
 
     fun sendJson(json: JSONObject) = sendText(json.toString())
 
+    fun respondToChallenge(challenge: String) {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(sharedSecret, "HmacSHA256"))
+        val proof = mac.doFinal(challenge.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        sendJson(JSONObject().apply {
+            put("type", "hello")
+            put("device_id", deviceId)
+            put("challenge", challenge)
+            put("proof", proof)
+            put("payload", JSONObject().apply {
+                put("device_id", deviceId)
+                put("capabilities", listOf(
+                    "android.accessibility.ui_tree",
+                    "android.accessibility.actions",
+                    "android.accessibility.gestures",
+                    "android.accessibility.screenshot",
+                ))
+            })
+        })
+    }
+
     fun close(reason: String = "client_close") {
         try { socket?.close() } catch (_: Throwable) { }
         socket = null
@@ -117,11 +128,7 @@ class TomWebSocketClient(
             val opcode = first and 0x0f
             var length = second and 0x7f
             if (length == 126) length = readU16(input)
-            else if (length == 127) {
-                val longLength = readU64(input)
-                require(longLength <= Int.MAX_VALUE) { "WebSocket frame too large" }
-                length = longLength.toInt()
-            }
+            else if (length == 127) length = readU64(input).toInt().also { require(it >= 0) }
             val masked = (second and 0x80) != 0
             val mask = if (masked) ByteArray(4).also { readFully(input, it) } else null
             val payload = ByteArray(length).also { readFully(input, it) }
@@ -171,13 +178,11 @@ class TomWebSocketClient(
     }
 
     private fun readU16(input: BufferedInputStream): Int = (input.read() shl 8) or input.read()
-
     private fun readU64(input: BufferedInputStream): Long {
         var result = 0L
         repeat(8) { result = (result shl 8) or (input.read().toLong() and 0xff) }
         return result
     }
-
     private fun readFully(input: BufferedInputStream, data: ByteArray) {
         var offset = 0
         while (offset < data.size) {
@@ -186,7 +191,6 @@ class TomWebSocketClient(
             offset += count
         }
     }
-
     private fun writeU16(out: BufferedOutputStream, value: Int) { out.write(value ushr 8); out.write(value) }
     private fun writeU64(out: BufferedOutputStream, value: Long) { for (shift in 56 downTo 0 step 8) out.write((value ushr shift).toInt()) }
     private fun post(block: () -> Unit) = main.post(block)
