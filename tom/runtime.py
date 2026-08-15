@@ -44,28 +44,17 @@ class AgentRuntime:
         if plan.needs_clarification:
             question = plan.clarification_question.strip() or "Which option do you want me to use?"
             events = [{"type": "clarification.required", "question": question}]
-            await self.events_bus.publish(
-                "clarification.required",
-                {"task_id": request.conversation_id, "goal": request.message, "question": question},
-            )
+            await self.events_bus.publish("clarification.required", {"task_id": request.conversation_id, "goal": request.message, "question": question})
             self.memory.add(request.conversation_id, "assistant", question, {"clarification": True})
-            return AgentResponse(
-                conversation_id=request.conversation_id,
-                reply=question,
-                plan=plan,
-                events=events,
-            )
+            return AgentResponse(conversation_id=request.conversation_id, reply=question, plan=plan, events=events)
 
-        task = TaskState(
-            request.conversation_id,
-            plan.goal,
-            [StepState(i, c.name) for i, c in enumerate(plan.steps[:40])],
-        )
+        task = TaskState(request.conversation_id, plan.goal, [StepState(i, c.name) for i, c in enumerate(plan.steps[:40])])
         self._tasks[request.conversation_id] = task
         live = LiveExecutionContext(request.conversation_id, plan.goal)
         self._live[request.conversation_id] = live
-        events: list[dict[str, Any]] = [{"type": "plan.created", "steps": len(task.steps), "progress": 0.0}]
-        await self.events_bus.publish("plan.created", {"task_id": request.conversation_id, "goal": plan.goal})
+        device_id = str(request.context.get("device_id", "")).strip()
+        events: list[dict[str, Any]] = [{"type": "TASK_STARTED", "goal": plan.goal, "device_id": device_id}]
+        await self.events_bus.publish("TASK_STARTED", {"task_id": request.conversation_id, "goal": plan.goal, "device_id": device_id})
         pending: list[ToolCall] = []
         results: list[ToolResult] = []
 
@@ -76,10 +65,7 @@ class AgentRuntime:
                 pending.append(call)
                 task.steps[index].status = task.steps[index].status.BLOCKED
                 events.append({"type": "approval.required", "tool": call.name, "risk": call.risk.value, "step": index})
-                await self.events_bus.publish(
-                    "approval.required",
-                    {"task_id": request.conversation_id, "tool": call.name, "risk": call.risk.value},
-                )
+                await self.events_bus.publish("approval.required", {"task_id": request.conversation_id, "tool": call.name, "risk": call.risk.value})
                 continue
             if decision is Decision.DENY:
                 task.steps[index].status = task.steps[index].status.ABORTED
@@ -88,13 +74,8 @@ class AgentRuntime:
                 continue
 
             task.start_current()
-            result = await self._execute(
-                call,
-                events,
-                context=context,
-                conversation_id=request.conversation_id,
-                step=index,
-            )
+            events.append({"type": "LIVE_PROGRESS", "message": f"{call.name} kar raha hoon.", "step": index})
+            result = await self._execute(call, events, context=context, conversation_id=request.conversation_id, step=index)
             results.append(result)
             task.finish(result.success, error=result.error)
             if result.success:
@@ -102,10 +83,7 @@ class AgentRuntime:
             else:
                 mode = task.recover_or_advance()
                 events.append({"type": "recovery.decision", "step": index, "mode": mode, "attempts": task.steps[index].attempts})
-                await self.events_bus.publish(
-                    "recovery.decision",
-                    {"task_id": request.conversation_id, "step": index, "mode": mode},
-                )
+                await self.events_bus.publish("recovery.decision", {"task_id": request.conversation_id, "step": index, "mode": mode})
                 if mode == "abort":
                     break
             progress = task.progress()
@@ -117,18 +95,12 @@ class AgentRuntime:
             self._contexts[request.conversation_id] = context
         reply = await self.responder.respond(user_message=request.message, events=events, context=context)
         self.memory.add(request.conversation_id, "assistant", reply, {"events": events, "task": task.public_dict()})
-        await self.events_bus.publish(
-            "assistant.reply",
-            {"task_id": request.conversation_id, "reply": reply, "pending": len(pending)},
-        )
-        return AgentResponse(
-            conversation_id=request.conversation_id,
-            reply=reply,
-            plan=plan,
-            pending_approval=pending,
-            results=results,
-            events=events,
-        )
+        terminal_type = "TASK_FAILED" if any(not result.success for result in results) and not pending else "TASK_COMPLETED"
+        terminal_message = reply
+        events.append({"type": terminal_type, "message": terminal_message, "goal": plan.goal})
+        await self.events_bus.publish(terminal_type, {"task_id": request.conversation_id, "message": terminal_message, "goal": plan.goal})
+        await self.events_bus.publish("assistant.reply", {"task_id": request.conversation_id, "reply": reply, "pending": len(pending), "terminal": True})
+        return AgentResponse(conversation_id=request.conversation_id, reply=reply, plan=plan, pending_approval=pending, results=results, events=events)
 
     def pending(self, conversation_id: str) -> list[ToolCall]:
         return list(self._pending.get(conversation_id, []))
@@ -143,14 +115,7 @@ class AgentRuntime:
             state["live"] = live.snapshot()
         return state
 
-    def update_observation(
-        self,
-        conversation_id: str,
-        *,
-        package: str | None = None,
-        url: str | None = None,
-        fingerprint: str | None = None,
-    ) -> dict[str, Any] | None:
+    def update_observation(self, conversation_id: str, *, package: str | None = None, url: str | None = None, fingerprint: str | None = None) -> dict[str, Any] | None:
         live = self._live.get(conversation_id)
         if live is None:
             return None
@@ -177,31 +142,17 @@ class AgentRuntime:
             self._contexts.pop(conversation_id, None)
         reply = await self.responder.respond(user_message="approved action", events=events, context=context)
         self.memory.add(conversation_id, "assistant", reply, {"events": events, "result": result.model_dump()})
-        await self.events_bus.publish(
-            "assistant.reply",
-            {"task_id": conversation_id, "reply": reply, "pending": len(calls)},
-        )
+        await self.events_bus.publish("assistant.reply", {"task_id": conversation_id, "reply": reply, "pending": len(calls)})
         return {"tool": call.name, "result": result.model_dump(), "reply": reply, "events": events}
 
-    async def _execute(
-        self,
-        call: ToolCall,
-        events: list[dict[str, Any]],
-        *,
-        context: dict[str, Any] | None = None,
-        conversation_id: str | None = None,
-        approval_token: str | None = None,
-        step: int = 0,
-    ) -> ToolResult:
+    async def _execute(self, call: ToolCall, events: list[dict[str, Any]], *, context: dict[str, Any] | None = None, conversation_id: str | None = None, approval_token: str | None = None, step: int = 0) -> ToolResult:
         action_id = str(uuid4())
         live = self._live.get(conversation_id or "")
         try:
             if live:
                 live.action_started(action_id)
-            await self.events_bus.publish(
-                "action.started",
-                {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "step": step},
-            )
+            events.append({"type": "ACTION", "action_id": action_id, "action": call.name, "step": step})
+            await self.events_bus.publish("action.started", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "step": step})
             tool = self.tools.get(call)
             arguments = dict(call.arguments)
             if call.name.startswith("device_"):
@@ -217,11 +168,8 @@ class AgentRuntime:
             if not pre.ok:
                 if live:
                     live.action_finished(False, pre.reason)
-                events.append({"type": "action.blocked", "tool": call.name, "reason": pre.reason})
-                await self.events_bus.publish(
-                    "action.finished",
-                    {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": False, "error": pre.reason},
-                )
+                events.append({"type": "VERIFICATION", "verified": False, "reason": pre.reason})
+                await self.events_bus.publish("action.finished", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": False, "error": pre.reason})
                 return ToolResult(tool=call.name, success=False, error=pre.reason)
             output = await tool.run(pre.normalized_arguments or arguments)
             result = ToolResult(tool=call.name, success=True, output=output)
@@ -229,26 +177,20 @@ class AgentRuntime:
             if not verification.ok:
                 if live:
                     live.action_finished(False, verification.reason)
-                events.append({"type": "tool.unverified", "tool": call.name, "reason": verification.reason})
-                await self.events_bus.publish(
-                    "action.finished",
-                    {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": False, "error": verification.reason},
-                )
+                events.append({"type": "VERIFICATION", "verified": False, "reason": verification.reason})
+                await self.events_bus.publish("action.finished", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": False, "error": verification.reason})
                 return ToolResult(tool=call.name, success=False, error=verification.reason)
             if live:
                 live.action_finished(True)
+            events.append({"type": "OBSERVATION", "action_id": action_id, "summary": "fresh result observed"})
+            events.append({"type": "VERIFICATION", "verified": True, "action_id": action_id})
             events.append({"type": "tool.completed", "tool": call.name, "verified": True})
-            await self.events_bus.publish(
-                "action.finished",
-                {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": True, "output": output},
-            )
+            await self.events_bus.publish("action.finished", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": True, "output": output})
             return result
-        except Exception as exc:  # noqa: BLE001 - tool adapters are untrusted plugin boundaries
+        except Exception as exc:
             if live:
                 live.action_finished(False, str(exc))
+            events.append({"type": "VERIFICATION", "verified": False, "reason": str(exc), "action_id": action_id})
             events.append({"type": "tool.failed", "tool": call.name, "error": str(exc)})
-            await self.events_bus.publish(
-                "action.finished",
-                {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": False, "error": str(exc)},
-            )
+            await self.events_bus.publish("action.finished", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": False, "error": str(exc)})
             return ToolResult(tool=call.name, success=False, error=str(exc))
