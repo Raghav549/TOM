@@ -3,6 +3,7 @@ package com.tom.device.bridge
 import android.util.Log
 import com.tom.device.TomAccessibilityService
 import com.tom.device.TomActionExecutor
+import com.tom.device.TomLiveActivityStore
 import com.tom.device.ActionRequest
 import org.json.JSONObject
 import java.util.UUID
@@ -23,17 +24,21 @@ class TomBridgeRuntime(
 
     fun connect() {
         client?.close("reconnect")
+        TomLiveActivityStore.add("transport", "Connecting", endpoint)
         client = TomWebSocketClient(endpoint, deviceId, sharedSecret, this).also { it.connect() }
     }
 
     fun disconnect() {
         client?.close("client_disconnect")
         client = null
+        TomLiveActivityStore.add("transport", "Disconnected", "TOM Core connection closed", true)
     }
 
     fun isConnected(): Boolean = client?.isOpen() == true
 
-    override fun onConnected() = Unit
+    override fun onConnected() {
+        TomLiveActivityStore.add("transport", "Connected", "Secure device channel is live")
+    }
 
     override fun onText(message: String) {
         try {
@@ -43,17 +48,23 @@ class TomBridgeRuntime(
                 "action_request" -> handleAction(envelope)
                 "screenshot_request" -> captureScreenshot(envelope)
                 "observation_request" -> captureObservation(envelope)
+                "voice_commentary" -> TomLiveActivityStore.add(
+                    "voice", "TOM", envelope.optJSONObject("payload")?.optString("text", "") ?: ""
+                )
+                "task_event" -> handleTaskEvent(envelope.optJSONObject("payload") ?: envelope)
                 "ping" -> sendEnvelope("pong", JSONObject())
                 "revoke" -> disconnect()
                 else -> Log.d("TOM", "ignored bridge message")
             }
         } catch (t: Throwable) {
             Log.e("TOM", "invalid bridge message", t)
+            TomLiveActivityStore.add("error", "Bridge error", t.message ?: "invalid message")
         }
     }
 
     fun sendObservation(snapshot: String, taskId: String? = null, actionId: String? = null) {
         if (!isConnected()) return
+        TomLiveActivityStore.add("observation", "Screen observed", "Accessibility state captured")
         sendEnvelope("observation", JSONObject().apply {
             put("snapshot", JSONObject(snapshot))
             put("source", "android_accessibility")
@@ -77,19 +88,20 @@ class TomBridgeRuntime(
 
     private fun captureScreenshot(envelope: JSONObject) {
         val requestId = envelope.optString("request_id").ifBlank { UUID.randomUUID().toString() }
+        TomLiveActivityStore.add("vision", "Capturing screen", "Fresh screenshot requested for grounding")
         screenshotCapture.capture { result ->
             result.onSuccess { payload ->
                 screenshotChunker.encode(payload).forEach { chunk ->
                     sendEnvelope("screenshot_chunk", JSONObject(chunk).apply { put("request_id", requestId) })
                 }
-                sendEnvelope("screenshot_complete", JSONObject().apply {
-                    put("request_id", requestId)
-                })
+                sendEnvelope("screenshot_complete", JSONObject().apply { put("request_id", requestId) })
+                TomLiveActivityStore.add("vision", "Screen sent", "Screenshot delivered to TOM Core")
             }.onFailure { error ->
                 sendEnvelope("screenshot_error", JSONObject().apply {
                     put("request_id", requestId)
                     put("error", error.message ?: "capture_failed")
                 })
+                TomLiveActivityStore.add("error", "Screenshot failed", error.message ?: "capture failed")
             }
         }
     }
@@ -102,12 +114,14 @@ class TomBridgeRuntime(
         val action = payload.optString("action")
         val args = payload.optJSONObject("arguments") ?: JSONObject()
 
+        TomLiveActivityStore.add("action", "Working", action)
         if (taskId.isBlank()) {
             sendResult(actionId, false, "missing_task_id")
             return
         }
         if (action in CONSEQUENT_ACTIONS && approval.isNullOrBlank()) {
             sendResult(actionId, false, "approval_required")
+            TomLiveActivityStore.add("approval", "Confirmation required", action)
             return
         }
 
@@ -137,6 +151,11 @@ class TomBridgeRuntime(
 
         val result = actionExecutor.execute(request)
         sendResult(actionId, result.accepted, if (result.completed) "completed" else (result.error ?: "not_completed"))
+        TomLiveActivityStore.add(
+            if (result.completed) "verified_pending" else "action_failed",
+            if (result.completed) "Action executed" else "Action failed",
+            result.error ?: action,
+        )
 
         if (result.completed) {
             sendEnvelope("observation_request", JSONObject().apply {
@@ -151,6 +170,13 @@ class TomBridgeRuntime(
                 put("reason", "post_action_verification")
             })
         }
+    }
+
+    private fun handleTaskEvent(payload: JSONObject) {
+        val type = payload.optString("type", "task")
+        val title = payload.optString("title", type.replace('_', ' '))
+        val detail = payload.optString("detail", payload.optString("message", ""))
+        TomLiveActivityStore.add("task", title, detail, type.endsWith(".stopped"))
     }
 
     private fun sendResult(actionId: String, accepted: Boolean, status: String) {
@@ -173,10 +199,12 @@ class TomBridgeRuntime(
 
     override fun onDisconnected(reason: String) {
         Log.w("TOM", "bridge disconnected: $reason")
+        TomLiveActivityStore.add("transport", "Connection lost", reason, true)
     }
 
     override fun onError(error: Throwable) {
         Log.e("TOM", "bridge transport error", error)
+        TomLiveActivityStore.add("error", "Connection error", error.message ?: "transport error")
     }
 
     companion object {
