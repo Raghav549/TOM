@@ -24,6 +24,8 @@ class Plan(BaseModel):
     goal: str
     steps: list[ToolCall] = Field(default_factory=list)
     explanation: str = ""
+    needs_clarification: bool = False
+    clarification_question: str = ""
 
 
 class ToolResult(BaseModel):
