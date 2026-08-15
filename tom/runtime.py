@@ -146,7 +146,7 @@ class AgentRuntime:
         if tool_index < 0 or tool_index >= len(calls):
             raise IndexError("invalid pending tool index")
         call = calls[tool_index]
-        token = self.approvals.approve(call)
+        self.approvals.approve(call)
         if not self.approvals.consume(call):
             raise RuntimeError("approval token could not be consumed")
         if self.policy.decide(call, approved=True) is not Decision.ALLOW:
