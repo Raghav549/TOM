@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
+import hashlib
+import secrets
 import time
+from dataclasses import dataclass, field
+from enum import Enum
 
 
 class SessionState(str, Enum):
@@ -10,7 +12,6 @@ class SessionState(str, Enum):
     CONNECTED = "connected"
     DEGRADED = "degraded"
     REVOKED = "revoked"
-    CLOSED = "closed"
 
 
 @dataclass
@@ -19,11 +20,27 @@ class DeviceSession:
     state: SessionState = SessionState.PAIRING
     last_sequence: int = 0
     last_heartbeat: float = 0.0
+    challenge: str = field(default_factory=lambda: secrets.token_urlsafe(32))
+    _secret_digest: str | None = field(default=None, repr=False)
+
+    def provision_secret(self) -> str:
+        """Create a one-time provisioning secret; only its digest is retained."""
+        secret = secrets.token_urlsafe(48)
+        self._secret_digest = hashlib.sha256(secret.encode()).hexdigest()
+        return secret
+
+    def authenticate(self, secret: str) -> bool:
+        if self.state is SessionState.REVOKED or not self._secret_digest:
+            return False
+        digest = hashlib.sha256(secret.encode()).hexdigest()
+        if not secrets.compare_digest(digest, self._secret_digest):
+            return False
+        self.state = SessionState.CONNECTED
+        self.last_heartbeat = time.monotonic()
+        return True
 
     def accept_sequence(self, sequence: int) -> bool:
-        if self.state is SessionState.REVOKED:
-            return False
-        if sequence <= self.last_sequence:
+        if self.state is SessionState.REVOKED or sequence <= self.last_sequence:
             return False
         self.last_sequence = sequence
         return True
@@ -44,3 +61,4 @@ class DeviceSession:
 
     def revoke(self) -> None:
         self.state = SessionState.REVOKED
+        self._secret_digest = None
