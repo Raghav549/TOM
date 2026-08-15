@@ -16,6 +16,7 @@ from tom.config import settings
 from tom.device.core_receiver import CoreBridgeReceiver
 from tom.device_auth import DeviceAuthenticator
 from tom.device_capabilities import DeviceCapabilityRegistry
+from tom.integration_registry import status as integration_status
 from tom.live_events import LiveEventStream
 from tom.live_task_bridge import LiveTaskBridge
 from tom.memory import MemoryStore
@@ -24,6 +25,7 @@ from tom.perception.pipeline import MultimodalRuntime
 from tom.perception.vision_runtime import OpenAICompatibleVisionAdapter, VisionRuntimeConfig
 from tom.permissions import PermissionPolicy, Decision
 from tom.planner import ModelPlanner, RulePlanner
+from tom.production import ProductionReadiness
 from tom.providers import OpenAICompatibleLLM
 from tom.public_api_tools import register_public_api_tools
 from tom.response import FriendlyFallback, ModelResponder
@@ -34,12 +36,13 @@ from tom.voice.engine import ExternalCommandSpeechEngine, SpeechEngineConfig
 from tom.voice.models import VOICE_PROFILES
 from tom.voice.session import VoiceSession
 
-app = FastAPI(title="TOM Agent Runtime", version="0.9.0")
+app = FastAPI(title="TOM Agent Runtime", version="1.0.0")
 profile = CompanionProfile()
 tools = ToolRegistry({})
 device_capabilities = DeviceCapabilityRegistry.android_baseline()
 fallback_planner = RulePlanner()
 fallback_responder = FriendlyFallback()
+readiness = ProductionReadiness()
 
 if settings.llm_enabled:
     llm = OpenAICompatibleLLM(settings.llm_base_url, settings.llm_api_key, settings.llm_model)
@@ -71,6 +74,8 @@ async def on_core_result(result: dict) -> None:
     task_id = str(result.get("task_id") or "")
     if task_id:
         await live_events.publish("verification.result", result, task_id=task_id)
+        # Resolve the exact pending Android action waiter before any re-plan.
+        await android_bridge.resolve_verification(result)
         task_state = runtime.task_state(task_id) or {}
         goal = str(task_state.get("goal") or "")
         device_id = str(result.get("device_id") or task_state.get("device_id") or "")
@@ -85,7 +90,6 @@ async def on_core_result(result: dict) -> None:
                     {"steps": len(replanned.steps), "goal": replanned.goal, "reason": "multimodal_verification_failed"},
                     task_id=task_id,
                 )
-                # Dispatch only the first newly grounded, policy-allowed device step.
                 for step in replanned.steps:
                     if not step.name.startswith("device_"):
                         continue
@@ -139,7 +143,22 @@ class VoiceSynthesisRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "tom", "version": "0.9.0"}
+    return {"status": "ok", "service": "tom", "version": "1.0.0"}
+
+
+@app.get("/ready")
+async def ready() -> dict[str, object]:
+    return readiness.report()
+
+
+@app.get("/v1/production/readiness")
+async def production_readiness() -> dict[str, object]:
+    return readiness.report()
+
+
+@app.get("/v1/integrations")
+async def integrations() -> dict[str, object]:
+    return {"integrations": integration_status(), "note": "Unconfigured providers are never executed."}
 
 
 @app.get("/v1/capabilities")
@@ -153,6 +172,7 @@ async def capabilities() -> dict:
             "screen_state_fingerprinting", "screen_change_detection", "multimodal_action_verification", "live_re_grounding", "live_replanning",
             "ocr_fallback_contract", "live_full_duplex_voice", "android_continuous_pcm_stream", "neural_vad", "streaming_asr",
             "partial_transcripts", "learned_turn_prediction", "continuous_prosody_state", "voice_barge_in", "partial_tts_cancellation", "streaming_tts",
+            "production_readiness", "integration_registry", "correlated_verification_waiters",
         ],
         "model_runtime": settings.llm_enabled,
         "vision_runtime": vision_runtime is not None,
