@@ -181,10 +181,10 @@ class TomVoiceLoop(
                             )
                             onState(if (tomSpeaking) "interrupting" else "listening")
                         }
-                        if (sentTurn) socket?.send(okio.ByteString.of(shortsToBytes(frame, read)))
+                        if (sentTurn) socket?.send(okio.ByteString.of(*shortsToBytes(frame, read)))
                     } else if (sentTurn) {
                         silenceMs += 20
-                        socket?.send(okio.ByteString.of(shortsToBytes(frame, read)))
+                        socket?.send(okio.ByteString.of(*shortsToBytes(frame, read)))
                         if (silenceMs >= END_SILENCE_MS) {
                             socket?.send(JSONObject().put("type", "audio_end").toString())
                             sentTurn = false
