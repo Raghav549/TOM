@@ -15,7 +15,8 @@ from tom.tools import ToolRegistry
 def test_expanded_catalog_contains_core_integrations() -> None:
     names = {entry["adapter"] for entry in executable_catalog()}
     assert {"api.weather", "api.geocode", "api.currency", "api.holidays"} <= names
-    assert {"api.time", "api.news", "api.crypto", "api.github", "api.flights"} <= names
+    assert {"api.time", "api.news", "api.crypto", "api.github"} <= names
+    assert "api.flights" not in names
 
 
 def test_registry_registers_public_api_tools() -> None:
