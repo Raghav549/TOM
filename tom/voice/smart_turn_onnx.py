@@ -46,7 +46,9 @@ class SmartTurnONNX:
         # Keep this implementation dependency-light; Pipecat's vendored feature
         # extractor can be selected through TOM_SMART_TURN_USE_PIPECAT=1.
         try:
-            from pipecat.audio.turn.smart_turn._whisper_features import compute_whisper_log_mel_features
+            from pipecat.audio.turn.smart_turn._whisper_features import (
+                compute_whisper_log_mel_features,
+            )
 
             return compute_whisper_log_mel_features(audio, do_normalize=True)
         except ImportError:
