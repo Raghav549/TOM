@@ -5,7 +5,7 @@ import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
-/** Android-side bridge runtime with a second local policy gate. */
+/** Android-side bridge runtime with policy-gated perception and action execution. */
 class TomBridgeRuntime(
     private val endpoint: String,
     private val deviceId: String,
@@ -14,6 +14,8 @@ class TomBridgeRuntime(
 ) : TomWebSocketClient.Listener {
     private val sequence = AtomicLong(0)
     private var client: TomWebSocketClient? = null
+    private val screenshotCapture = TomScreenshotCapture(service)
+    private val screenshotChunker = TomScreenshotChunker()
 
     fun connect() {
         client = TomWebSocketClient(endpoint, deviceId, sharedSecret, this).also { it.connect() }
@@ -27,6 +29,7 @@ class TomBridgeRuntime(
             when (envelope.optString("type")) {
                 "challenge" -> client?.respondToChallenge(envelope.optString("challenge"))
                 "action_request" -> handleAction(envelope)
+                "screenshot_request" -> captureScreenshot(envelope)
                 "ping" -> sendEnvelope("pong", JSONObject())
                 "revoke" -> client?.close("revoked")
                 else -> Log.d("TOM", "ignored bridge message")
@@ -41,6 +44,25 @@ class TomBridgeRuntime(
             put("snapshot", JSONObject(snapshot))
             put("source", "android_accessibility")
         })
+    }
+
+    private fun captureScreenshot(envelope: JSONObject) {
+        val requestId = envelope.optString("request_id").ifBlank { UUID.randomUUID().toString() }
+        screenshotCapture.capture { result ->
+            result.onSuccess { payload ->
+                screenshotChunker.encode(payload).forEach { chunk ->
+                    sendEnvelope("screenshot_chunk", JSONObject(chunk).apply { put("request_id", requestId) })
+                }
+                sendEnvelope("screenshot_complete", JSONObject().apply {
+                    put("request_id", requestId)
+                })
+            }.onFailure { error ->
+                sendEnvelope("screenshot_error", JSONObject().apply {
+                    put("request_id", requestId)
+                    put("error", error.message ?: "capture_failed")
+                })
+            }
+        }
     }
 
     private fun handleAction(envelope: JSONObject) {
@@ -65,6 +87,7 @@ class TomBridgeRuntime(
             "global_home" -> service.home()
             "global_recents" -> service.recents()
             "tap" -> service.tap(args.optDouble("x").toFloat(), args.optDouble("y").toFloat())
+            "tap_node" -> service.clickNode(args.optString("node_id"))
             "swipe" -> service.swipe(
                 args.optDouble("x1").toFloat(), args.optDouble("y1").toFloat(),
                 args.optDouble("x2").toFloat(), args.optDouble("y2").toFloat(),
@@ -76,6 +99,12 @@ class TomBridgeRuntime(
         sendResult(actionId, accepted, if (accepted) "accepted" else "unsupported_or_not_grounded")
         if (accepted) {
             sendEnvelope("observation_request", JSONObject().apply {
+                put("task_id", taskId)
+                put("action_id", actionId)
+                put("reason", "post_action_verification")
+            })
+            sendEnvelope("screenshot_request", JSONObject().apply {
+                put("request_id", UUID.randomUUID().toString())
                 put("task_id", taskId)
                 put("action_id", actionId)
                 put("reason", "post_action_verification")
