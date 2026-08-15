@@ -2,7 +2,7 @@ package com.tom.device
 
 import java.util.UUID
 
-/** Wire-level contracts for the future authenticated TOM Core <-> Android stream. */
+/** Wire-level contracts for the authenticated TOM Core <-> Android stream. */
 sealed interface TomBridgeMessage
 
 data class DeviceHello(
@@ -26,6 +26,8 @@ data class ActionRequest(
     val text: String? = null,
     val x: Float? = null,
     val y: Float? = null,
+    val endX: Float? = null,
+    val endY: Float? = null,
     val durationMs: Long? = null,
 ) : TomBridgeMessage
 
@@ -36,10 +38,6 @@ data class ActionResult(
     val error: String? = null,
 ) : TomBridgeMessage
 
-/**
- * Transport is deliberately abstract: WebSocket, local loopback or another
- * authenticated channel can implement it without changing device actions.
- */
 interface TomBridgeTransport {
     suspend fun send(message: TomBridgeMessage)
     suspend fun close()
