@@ -15,7 +15,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 
 class MainActivity : Activity() {
-    private lateinit var root: LinearLayout
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
 
@@ -33,7 +32,7 @@ class MainActivity : Activity() {
     private fun buildShell(): View {
         val shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(248, 247, 251))
+            background = TomGlassUi.plasmaBackground()
         }
         val header = LinearLayout(this).apply {
             setPadding(28, 28, 28, 20)
@@ -57,18 +56,13 @@ class MainActivity : Activity() {
         return shell
     }
 
-    private fun page(): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(6, 12, 6, 28)
-    }
-
     private fun add(view: View, top: Int = 12) {
         content.addView(view, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, top, 0, 0) })
     }
 
     private fun heading(text: String, sub: String) {
         add(TomGlassUi.title(this, text, 25f), 4)
-        add(TomGlassUi.body(this, sub), 7)
+        if (sub.isNotEmpty()) add(TomGlassUi.body(this, sub), 7)
     }
 
     private fun showHome() {
@@ -83,7 +77,7 @@ class MainActivity : Activity() {
     private fun showPermissions() {
         content.removeAllViews(); heading("Permission center", "Every powerful capability is opt-in. Android system confirmation remains in control.")
         add(TomGlassUi.card(this, "Accessibility", "UI-tree observation, semantic node grounding, and approved interaction.", "Open Accessibility") { openAccessibility() })
-        add(TomGlassUi.card(this, "Notifications", "Read device notifications only after Android grants notification-listener access.", "Open notification access") { startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")) })
+        add(TomGlassUi.card(this, "Notifications", "Read device notifications only after Android grants notification-listener access.", "Open notification access") { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) })
         add(TomGlassUi.card(this, "Screen capture", "Capture actual pixels for visual verification. Android will show its MediaProjection consent dialog each session.", "Request screen capture") { requestScreenCapture() })
         add(TomGlassUi.card(this, "Microphone", "Needed only for voice conversations and audio-call features.", "Allow microphone") { requestPermission(Manifest.permission.RECORD_AUDIO, 20) })
         add(TomGlassUi.card(this, "Camera", "Needed only for video-call assistance when the user explicitly starts it.", "Allow camera") { requestPermission(Manifest.permission.CAMERA, 21) })
@@ -100,7 +94,7 @@ class MainActivity : Activity() {
         content.removeAllViews(); heading("More", "System information, safety controls, and project notices.")
         add(TomGlassUi.card(this, "Safety", "Consequential actions require policy approval. Unknown post-action state never triggers a blind retry.", "View safety rules") { showTextPage("Safety", "TOM treats transport ACK as receipt, not success. Purchases, payments, sends, deletes, and account changes remain approval-gated. Missing observation is UNKNOWN; it does not authorize retry.") })
         add(TomGlassUi.card(this, "Privacy", "TOM exposes sensitive capabilities only through explicit Android grants and authenticated device sessions.", "View privacy") { showTextPage("Privacy", "Device observations are intended for the active TOM session. Secrets are not rendered in the UI. Password fields are redacted at the accessibility layer. Review your Core retention settings before production use.") })
-        add(TomGlassUi.card(this, "License", "Open-source notices and project licensing information.", "View license") { showTextPage("License", "TOM is distributed with the license files in its repository. Third-party components retain their own licenses. See the repository LICENSE and NOTICE files before redistribution.") })
+        add(TomGlassUi.card(this, "License", "Open-source notices and project licensing information.", "View license") { showTextPage("License", "TOM is distributed under Apache License 2.0. Third-party components retain their own licenses. See the repository LICENSE and NOTICE files before redistribution.") })
         add(TomGlassUi.card(this, "About", "TOM device bridge build.", "View build info") { showTextPage("About", "TOM\nDevice bridge build\n\nCapabilities are intentionally permission-gated and transport-authenticated.") })
     }
 
