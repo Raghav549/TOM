@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-import numpy as np
-
 
 @dataclass(frozen=True)
 class PartialTranscript:
@@ -15,11 +13,7 @@ class PartialTranscript:
 
 
 class StreamingFasterWhisper:
-    """Incremental ASR over a rolling PCM window.
-
-    Audio can arrive continuously. The adapter periodically re-decodes the
-    recent window and emits partial text; final() decodes the complete turn.
-    """
+    """Incremental ASR over a rolling PCM window."""
 
     def __init__(self) -> None:
         self.model_name = os.getenv("TOM_ASR_MODEL", "small")
@@ -39,24 +33,18 @@ class StreamingFasterWhisper:
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise RuntimeError("faster-whisper is not installed") from exc
-        self._model = WhisperModel(
-            self.model_name,
-            device=self.device,
-            compute_type=self.compute_type,
-        )
+        self._model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
         return self._model
 
     @staticmethod
-    def _decode(model, pcm16: bytes, sample_rate: int) -> PartialTranscript:
+    def _decode(model, pcm16: bytes) -> PartialTranscript:
         if not pcm16:
             return PartialTranscript("", 0.0, None)
+        import numpy as np
+
         audio = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
         segments, info = model.transcribe(
-            audio,
-            beam_size=1,
-            vad_filter=False,
-            condition_on_previous_text=False,
-            without_timestamps=True,
+            audio, beam_size=1, vad_filter=False, condition_on_previous_text=False, without_timestamps=True
         )
         parts: list[str] = []
         confidence: list[float] = []
@@ -65,11 +53,7 @@ class StreamingFasterWhisper:
             if text:
                 parts.append(text)
             confidence.append(max(0.0, min(1.0, float(segment.avg_logprob + 1.0))))
-        return PartialTranscript(
-            " ".join(parts),
-            sum(confidence) / len(confidence) if confidence else 0.0,
-            getattr(info, "language", None),
-        )
+        return PartialTranscript(" ".join(parts), sum(confidence) / len(confidence) if confidence else 0.0, getattr(info, "language", None))
 
     def reset(self) -> None:
         self._buffer.clear()
@@ -85,13 +69,16 @@ class StreamingFasterWhisper:
             return None
         self._elapsed_ms = 0
         max_bytes = int(self.context_ms / 1000 * sample_rate) * 2
-        window = bytes(self._buffer[-max_bytes:])
-        result = self._decode(self._load(), window, sample_rate)
+        result = self._decode(self._load(), bytes(self._buffer[-max_bytes:]))
         if result.text == self._last_text:
             return None
         self._last_text = result.text
         return result
 
     def final(self, sample_rate: int = 16_000) -> PartialTranscript:
-        result = self._decode(self._load(), bytes(self._buffer), sample_rate)
-        return PartialTranscript(result.text, result.confidence, result.language, True)
+        return self._decode(self._load(), bytes(self._buffer)).__class__(
+            self._decode(self._load(), bytes(self._buffer)).text,
+            self._decode(self._load(), bytes(self._buffer)).confidence,
+            self._decode(self._load(), bytes(self._buffer)).language,
+            True,
+        )
