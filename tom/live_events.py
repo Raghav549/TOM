@@ -6,6 +6,28 @@ from dataclasses import dataclass
 from typing import Any
 
 
+TERMINAL_TYPES = {"task.completed", "task.failed", "TASK_COMPLETED", "TASK_FAILED"}
+
+
+def _voice_text(event_type: str, payload: dict[str, Any]) -> str:
+    message = str(payload.get("message") or payload.get("reply") or "")
+    if event_type in {"task.started", "TASK_STARTED"}:
+        return "Haan bhai, main kaam shuru kar raha hoon."
+    if event_type in {"task.progress", "LIVE_PROGRESS"}:
+        return str(payload.get("message") or "Kaam chal raha hai.")
+    if event_type in {"action.started", "action.requested", "ACTION"}:
+        return str(payload.get("commentary") or f"{payload.get('tool') or payload.get('action') or 'action'} kar raha hoon.")
+    if event_type in {"verification.started", "OBSERVATION"}:
+        return "Screen check kar raha hoon."
+    if event_type in {"verification.verified", "verification.result", "VERIFICATION"}:
+        return "Check kar raha hoon ki kaam sahi hua ya nahi."
+    if event_type in TERMINAL_TYPES:
+        return message or ("Ho gaya bhai, kaam complete ho gaya." if "completed" in event_type.lower() else "Bhai, kaam complete nahi ho paya.")
+    if event_type == "assistant.reply":
+        return message
+    return str(payload.get("voice_text") or "")
+
+
 @dataclass(frozen=True)
 class LiveEvent:
     seq: int
@@ -25,9 +47,9 @@ class LiveEvent:
 
 
 class LiveEventStream:
-    """Single server-side event source shared by Core, Android bridge and UI."""
+    """Single ordered source shared by Core, Android bridge, UI and voice."""
 
-    def __init__(self, history_size: int = 256) -> None:
+    def __init__(self, history_size: int = 512) -> None:
         self.history_size = history_size
         self._seq = 0
         self._history: list[LiveEvent] = []
@@ -35,9 +57,15 @@ class LiveEventStream:
         self._lock = asyncio.Lock()
 
     async def publish(self, event_type: str, payload: dict[str, Any] | None = None, *, task_id: str | None = None) -> LiveEvent:
+        data = dict(payload or {})
+        if "voice_text" not in data:
+            voice = _voice_text(event_type, data)
+            if voice:
+                data["voice_text"] = voice
+        data.setdefault("terminal", event_type in TERMINAL_TYPES)
         async with self._lock:
             self._seq += 1
-            event = LiveEvent(self._seq, event_type, task_id, payload or {}, time.time())
+            event = LiveEvent(self._seq, event_type, task_id, data, time.time())
             self._history.append(event)
             if len(self._history) > self.history_size:
                 del self._history[:-self.history_size]
