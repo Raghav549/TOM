@@ -17,9 +17,16 @@ class Settings:
     data_dir: Path = Path(os.getenv("TOM_DATA_DIR", ".tom-data"))
     approval_required: bool = os.getenv("TOM_APPROVAL_REQUIRED", "true").lower() == "true"
     llm_enabled: bool = os.getenv("TOM_LLM_ENABLED", "false").lower() == "true"
-    llm_base_url: str = os.getenv("TOM_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
+    # Qwen3-VL is open-weight and supports the multimodal GUI-agent path used by TOM.
+    # Keep the endpoint configurable so local Ollama/vLLM deployments and hosted
+    # OpenAI-compatible inference can use the exact same runtime.
+    llm_base_url: str = os.getenv("TOM_LLM_BASE_URL", "http://127.0.0.1:8000/v1")
     llm_api_key: str = os.getenv("TOM_LLM_API_KEY", "")
-    llm_model: str = os.getenv("TOM_LLM_MODEL", "llama3.2")
+    llm_model: str = os.getenv("TOM_LLM_MODEL", "Qwen/Qwen3-VL-8B-Instruct")
+    vision_base_url: str = os.getenv("TOM_VISION_BASE_URL", "")
+    vision_api_key: str = os.getenv("TOM_VISION_API_KEY", "")
+    vision_model: str = os.getenv("TOM_VISION_MODEL", "")
+    qwen_ui_enabled: bool = os.getenv("TOM_QWEN_UI_ENABLED", "true").lower() == "true"
 
 
 settings = Settings()
