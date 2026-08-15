@@ -31,7 +31,7 @@ class AndroidBridgeHub:
                 old.connected = False
                 try:
                     await old.websocket.close(code=4001, reason="replaced")
-                except Exception:
+                except RuntimeError:
                     pass
             session = DeviceSession(device_id=device_id, websocket=websocket)
             self.sessions[device_id] = session
@@ -109,7 +109,7 @@ def install_android_bridge(app: Any) -> AndroidBridgeHub:
         except (ValueError, json.JSONDecodeError):
             try:
                 await websocket.close(code=1003, reason="invalid_message")
-            except Exception:
+            except RuntimeError:
                 pass
         finally:
             if session:
