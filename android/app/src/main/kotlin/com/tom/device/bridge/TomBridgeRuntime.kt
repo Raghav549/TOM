@@ -42,6 +42,7 @@ class TomBridgeRuntime(
                 "challenge" -> client?.respondToChallenge(envelope.optString("challenge"))
                 "action_request" -> handleAction(envelope)
                 "screenshot_request" -> captureScreenshot(envelope)
+                "observation_request" -> captureObservation(envelope)
                 "ping" -> sendEnvelope("pong", JSONObject())
                 "revoke" -> disconnect()
                 else -> Log.d("TOM", "ignored bridge message")
@@ -51,12 +52,27 @@ class TomBridgeRuntime(
         }
     }
 
-    fun sendObservation(snapshot: String) {
+    fun sendObservation(snapshot: String, taskId: String? = null, actionId: String? = null) {
         if (!isConnected()) return
         sendEnvelope("observation", JSONObject().apply {
             put("snapshot", JSONObject(snapshot))
             put("source", "android_accessibility")
+            taskId?.let { put("task_id", it) }
+            actionId?.let { put("action_id", it) }
         })
+    }
+
+    private fun captureObservation(envelope: JSONObject) {
+        val payload = envelope.optJSONObject("payload") ?: envelope
+        val taskId = payload.optString("task_id").takeIf { it.isNotBlank() }
+        val actionId = payload.optString("action_id").takeIf { it.isNotBlank() }
+        if (!service.publishCurrentObservation(taskId, actionId)) {
+            sendEnvelope("observation_error", JSONObject().apply {
+                taskId?.let { put("task_id", it) }
+                actionId?.let { put("action_id", it) }
+                put("error", "active_window_unavailable")
+            })
+        }
     }
 
     private fun captureScreenshot(envelope: JSONObject) {
