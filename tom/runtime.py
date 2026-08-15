@@ -10,6 +10,7 @@ from .permissions import Decision, PermissionPolicy
 from .planner import Planner
 from .response import FriendlyFallback, Responder
 from .tools import ToolRegistry
+from .verifier import ExecutionVerifier
 
 
 @dataclass
@@ -20,6 +21,7 @@ class AgentRuntime:
     approvals: ApprovalGate
     policy: PermissionPolicy = field(default_factory=PermissionPolicy)
     responder: Responder = field(default_factory=FriendlyFallback)
+    verifier: ExecutionVerifier = field(default_factory=ExecutionVerifier)
     _pending: dict[str, list[ToolCall]] = field(default_factory=dict)
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
@@ -87,9 +89,14 @@ class AgentRuntime:
     async def _execute(self, call: ToolCall, events: list[dict[str, Any]]) -> ToolResult:
         try:
             tool = self.tools.get(call)
-            result = await tool.run(call.arguments)
-            events.append({"type": "tool.completed", "tool": call.name})
-            return ToolResult(tool=call.name, success=True, output=result)
+            output = await tool.run(call.arguments)
+            result = ToolResult(tool=call.name, success=True, output=output)
+            verification = self.verifier.verify(result)
+            if not verification.ok:
+                events.append({"type": "tool.unverified", "tool": call.name, "reason": verification.reason})
+                return ToolResult(tool=call.name, success=False, error=verification.reason)
+            events.append({"type": "tool.completed", "tool": call.name, "verified": True})
+            return result
         except Exception as exc:  # noqa: BLE001 - tool adapters are untrusted plugin boundaries
             events.append({"type": "tool.failed", "tool": call.name, "error": str(exc)})
             return ToolResult(tool=call.name, success=False, error=str(exc))
