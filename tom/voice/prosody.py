@@ -3,9 +3,7 @@ from __future__ import annotations
 import math
 import re
 import struct
-import wave
 from dataclasses import dataclass
-from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -80,11 +78,7 @@ def _frame(samples: list[float], sample_rate: int) -> AcousticFrame:
 
 
 class PCM16ProsodyExtractor:
-    """Dependency-light acoustic feature extractor for live PCM16 mono audio.
-
-    It is deliberately an observation layer, not a clinical emotion classifier.
-    Learned SER/prosody models can replace or augment these features later.
-    """
+    """Dependency-light acoustic feature extractor for live PCM16 mono audio."""
 
     def analyze(self, pcm16: bytes, sample_rate: int = 16_000) -> UserProsody:
         if not pcm16 or len(pcm16) < 4:
@@ -93,19 +87,29 @@ class PCM16ProsodyExtractor:
         values = struct.unpack("<" + "h" * count, pcm16[: count * 2])
         samples = [v / 32768.0 for v in values]
         frame_size = max(160, int(sample_rate * 0.04))
-        frames = [_frame(samples[i : i + frame_size], sample_rate) for i in range(0, len(samples), frame_size)]
+        frames = [
+            _frame(samples[i : i + frame_size], sample_rate)
+            for i in range(0, len(samples), frame_size)
+        ]
         voiced = [f for f in frames if f.pitch_hz is not None and f.pitch_confidence >= 0.45]
         pitches = [f.pitch_hz for f in voiced if f.pitch_hz is not None]
         energies = [f.rms for f in frames]
         mean_pitch = sum(pitches) / len(pitches) if pitches else None
-        pitch_range = (max(pitches) - min(pitches)) if pitches else 0.0
+        pitch_range = max(pitches) - min(pitches) if pitches else 0.0
         energy = sum(energies) / len(energies) if energies else 0.0
-        energy_var = math.sqrt(sum((x - energy) ** 2 for x in energies) / len(energies)) if energies else 0.0
-        pitch_var = math.sqrt(sum((x - mean_pitch) ** 2 for x in pitches) / len(pitches)) if pitches and mean_pitch else 0.0
+        energy_var = (
+            math.sqrt(sum((x - energy) ** 2 for x in energies) / len(energies))
+            if energies
+            else 0.0
+        )
+        pitch_var = (
+            math.sqrt(sum((x - mean_pitch) ** 2 for x in pitches) / len(pitches))
+            if pitches and mean_pitch
+            else 0.0
+        )
         voiced_ratio = len(voiced) / max(1, len(frames))
         speech_rate_proxy = voiced_ratio * (1.0 + min(1.0, pitch_var / 60.0))
         confidence = sum(f.pitch_confidence for f in voiced) / len(voiced) if voiced else 0.0
-        likely_question = False
         likely_excited = pitch_var > 35.0 and energy_var > 0.035
         likely_tired = pitch_var < 10.0 and energy_var < 0.012 and voiced_ratio > 0.25
         return UserProsody(
@@ -116,7 +120,7 @@ class PCM16ProsodyExtractor:
             pitch_variation=pitch_var,
             speech_rate_proxy=speech_rate_proxy,
             pitch_confidence=confidence,
-            likely_question=likely_question,
+            likely_question=False,
             likely_excited=likely_excited,
             likely_tired_or_calm=likely_tired,
         )
@@ -125,11 +129,21 @@ class PCM16ProsodyExtractor:
 class ExpressiveSpeechPlanner:
     """Converts semantic text + voice style into non-random expressive cues."""
 
-    _filler_after = re.compile(r"\b(so|well|actually|acha|accha|haan|dekho|मतलब|अच्छा)\b", re.I)
+    _filler_after = re.compile(
+        r"\b(so|well|actually|acha|accha|haan|dekho|मतलब|अच्छा)\b", re.I
+    )
     _question = re.compile(r"[?？]$")
     _strong = re.compile(r"[!！]+")
 
-    def plan(self, text: str, *, emotion: str, intensity: float, speaking_rate: float, warmth: float) -> ExpressivePlan:
+    def plan(
+        self,
+        text: str,
+        *,
+        emotion: str,
+        intensity: float,
+        speaking_rate: float,
+        warmth: float,
+    ) -> ExpressivePlan:
         cues: list[SpeechCue] = []
         rationale: list[str] = []
         for match in self._filler_after.finditer(text):
@@ -153,8 +167,40 @@ class ExpressiveSpeechPlanner:
         if emotion in {"warm", "empathetic", "concerned"} and warmth > 0.7:
             cues.append(SpeechCue("backchannel_candidate", 0, 0, warmth))
         n = max(4, min(24, len(text) // 18 + 4))
-        base_pitch = 0.10 if emotion in {"happy", "amused", "excited"} else -0.04 if emotion in {"concerned", "sad", "calm"} else 0.0
-        pitch = tuple(base_pitch + (0.06 * math.sin(i / max(1, n - 1) * math.pi * 2)) * intensity for i in range(n))
-        energy = tuple(max(0.0, min(1.0, 0.35 + intensity * 0.45 + 0.08 * math.sin(i / max(1, n - 1) * math.pi)) for i in range(n))
-        rate = tuple(max(0.65, min(1.35, speaking_rate * (1.0 - 0.04 * math.sin(i / max(1, n - 1) * math.pi))) for i in range(n))
-        return ExpressivePlan(tuple(sorted(cues, key=lambda c: c.position)), pitch, energy, rate, tuple(rationale))
+        base_pitch = (
+            0.10
+            if emotion in {"happy", "amused", "excited"}
+            else -0.04
+            if emotion in {"concerned", "sad", "calm"}
+            else 0.0
+        )
+        denominator = max(1, n - 1)
+        pitch = tuple(
+            base_pitch
+            + (0.06 * math.sin(i / denominator * math.pi * 2)) * intensity
+            for i in range(n)
+        )
+        energy = tuple(
+            max(
+                0.0,
+                min(
+                    1.0,
+                    0.35 + intensity * 0.45 + 0.08 * math.sin(i / denominator * math.pi),
+                ),
+            )
+            for i in range(n)
+        )
+        rate = tuple(
+            max(
+                0.65,
+                min(1.35, speaking_rate * (1.0 - 0.04 * math.sin(i / denominator * math.pi))),
+            )
+            for i in range(n)
+        )
+        return ExpressivePlan(
+            tuple(sorted(cues, key=lambda c: c.position)),
+            pitch,
+            energy,
+            rate,
+            tuple(rationale),
+        )
