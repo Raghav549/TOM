@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -28,20 +30,16 @@ class DeviceAuthenticator:
         except json.JSONDecodeError as exc:
             raise RuntimeError("TOM_DEVICE_SECRETS_JSON must contain valid JSON") from exc
         if not isinstance(values, dict):
-            raise RuntimeError("TOM_DEVICE_SECRETS_JSON must be an object mapping device IDs to secrets")
+            raise TypeError("TOM_DEVICE_SECRETS_JSON must be an object mapping device IDs to secrets")
         for device_id, encoded in values.items():
             if not isinstance(device_id, str) or not isinstance(encoded, str) or not encoded:
-                raise RuntimeError("device secrets must map non-empty device IDs to non-empty strings")
-            # Secrets may be stored as raw UTF-8 for local testing or base64 for deployment.
+                raise ValueError("device secrets must map non-empty device IDs to non-empty strings")
             try:
-                import base64
                 secret = base64.b64decode(encoded, validate=True)
-                if len(secret) < 32:
-                    raise ValueError
-            except Exception:
+            except (binascii.Error, ValueError):
                 secret = encoded.encode("utf-8")
             if len(secret) < 32:
-                raise RuntimeError(f"device secret for {device_id!r} must be at least 32 bytes")
+                raise ValueError(f"device secret for {device_id!r} must be at least 32 bytes")
             self._secrets[device_id] = secret
 
     def enroll(self, device_id: str, secret: bytes | None = None) -> bytes:
