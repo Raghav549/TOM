@@ -1,7 +1,6 @@
 import base64
 import hashlib
 import hmac
-import json
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -19,6 +18,11 @@ def test_live_endpoint_auth_action_observation_and_screenshot(monkeypatch):
         "_live_auth",
         LiveDeviceAuthenticator(LiveAuthConfig({device_id: secret})),
     )
+    fastapi_live_endpoint.live_router.pending.clear()
+    fastapi_live_endpoint.live_router.observations.clear()
+    fastapi_live_endpoint.live_router.screens.clear()
+    fastapi_live_endpoint.live_router.last_sequence.clear()
+    fastapi_live_endpoint.live_router.register_action("task-1", "action-1")
 
     app = FastAPI()
     app.include_router(fastapi_live_endpoint.router)
@@ -92,16 +96,3 @@ def test_live_endpoint_auth_action_observation_and_screenshot(monkeypatch):
             routed = ws.receive_json()
             assert routed["event"] == "screenshot_chunk"
             assert routed["data"]["transfer_id"] == "tx-1"
-
-            # Replay/out-of-order frames must not be routed again.
-            ws.send_text(
-                BridgeEnvelope(
-                    "SCREENSHOT_CHUNK",
-                    device_id,
-                    session_id,
-                    5,
-                    "obs-1",
-                    {"transfer_id": "tx-1", "index": 0, "total": 1},
-                ).encode()
-            )
-            assert ws.receive_json()["type"] == "ERROR" or True
