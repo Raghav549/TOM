@@ -10,13 +10,15 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from tom.models import AgentRequest
 from tom.runtime import AgentRuntime
-from tom.voice.cosyvoice_stream import CosyVoiceStreamingAdapter, TTSChunk
+from tom.voice.cosyvoice_stream import TTSChunk
 from tom.voice.director import ConversationSignals
 from tom.voice.models import VOICE_PROFILES
 from tom.voice.neural_vad import SileroStreamingVAD
 from tom.voice.prosody_state import ContinuousProsodyTracker
 from tom.voice.session import VoiceSession
+from tom.voice.smart_turn_onnx import SmartTurnONNX
 from tom.voice.streaming_asr import StreamingFasterWhisper
+from tom.voice.tts_factory import build_streaming_tts
 from tom.voice.turn_predictor import LearnedTurnPredictor
 from tom.voice.turntaking import DuplexTurnManager, TurnSignal
 
@@ -31,16 +33,17 @@ def _next_or_none(iterator):
 
 
 class LiveVoiceConnection:
-    """Continuous full-duplex voice transport with neural turn control."""
+    """Continuous full-duplex voice transport with neural VAD + learned endpointing."""
 
     def __init__(self, websocket: WebSocket, runtime: AgentRuntime) -> None:
         self.websocket = websocket
         self.runtime = runtime
         self.asr = StreamingFasterWhisper()
-        self.tts = CosyVoiceStreamingAdapter()
+        self.tts = build_streaming_tts()
         self.vad = SileroStreamingVAD()
         self.prosody = ContinuousProsodyTracker()
         self.turn_predictor = LearnedTurnPredictor()
+        self.smart_turn = SmartTurnONNX()
         self.turns = DuplexTurnManager()
         self.conversation_id = str(uuid4())
         self.voice_id = "tom_m1"
@@ -54,6 +57,7 @@ class LiveVoiceConnection:
         self.turn_task: asyncio.Task | None = None
         self.pending_tts_text: str | None = None
         self.pending_tts_index = 0
+        self.awaiting_endpoint = False
         self._last_vad = 0.0
         self._last_prosody_emit_ms = 0
         self._audio_ms = 0
@@ -77,8 +81,8 @@ class LiveVoiceConnection:
         )
         await self.send_event("audio_stop", reason=reason, cancelled=True, resumable=bool(self.pending_tts_text))
 
-    async def speak(self, text: str, *, voice_id: str | None = None, signals: ConversationSignals | None = None,
-                    resume: bool = False) -> None:
+    async def speak(self, text: str, *, voice_id: str | None = None,
+                    signals: ConversationSignals | None = None, resume: bool = False) -> None:
         selected = voice_id or self.voice_id
         if selected not in VOICE_PROFILES:
             selected = "tom_m1"
@@ -91,7 +95,8 @@ class LiveVoiceConnection:
         self.tom_speaking = True
         try:
             await self.send_event("audio_start", sample_rate=24000, channels=1, encoding="pcm_s16le",
-                                  text=remaining, voice_id=selected, resumed=resume)
+                                  text=remaining, voice_id=selected, resumed=resume,
+                                  tts_engine=os.getenv("TOM_TTS_ENGINE", "indic-parler"))
             for index in range(self.pending_tts_index, len(segments)):
                 self.pending_tts_index = index
                 segment = segments[index]
@@ -108,6 +113,14 @@ class LiveVoiceConnection:
         finally:
             self.tom_speaking = False
             await self.send_event("audio_end")
+
+    async def _run_endpoint_model(self) -> bool:
+        if not self.smart_turn.configured or not self.turn_audio:
+            return True
+        decision = await asyncio.to_thread(self.smart_turn.predict, bytes(self.turn_audio), 16000)
+        await self.send_event("smart_turn", complete_probability=decision.complete_probability,
+                              complete=decision.complete)
+        return decision.complete
 
     async def _process_batch(self, pcm: bytes) -> None:
         self._audio_ms += int(len(pcm) / 2 * 1000 / self.audio_sample_rate)
@@ -134,31 +147,37 @@ class LiveVoiceConnection:
         if vad_decision and vad_decision.start:
             if self.tom_speaking:
                 await self.interrupt("neural_vad_barge_in")
-            self.turn_audio = bytearray(self.pre_roll)
-            self.asr.reset()
-            self.prosody.reset()
+            if not self.awaiting_endpoint:
+                self.turn_audio = bytearray(self.pre_roll)
+                self.asr.reset()
+                self.prosody.reset()
+            else:
+                self.awaiting_endpoint = False
             await self.send_event("state", value="listening")
 
         if vad_decision and vad_decision.speech:
             self.turn_audio.extend(pcm)
 
-        if vad_decision and vad_decision.end:
-            self.turn_audio.extend(pcm)
-            if not self.turn_task or self.turn_task.done():
-                self.turn_task = asyncio.create_task(self.process_turn(bytes(self.turn_audio)))
-            self.turn_audio.clear()
+        if vad_decision and vad_decision.end and self.turn_audio:
+            complete = await self._run_endpoint_model()
+            if complete:
+                if not self.turn_task or self.turn_task.done():
+                    self.turn_task = asyncio.create_task(self.process_turn(bytes(self.turn_audio)))
+                self.turn_audio.clear()
+                self.awaiting_endpoint = False
+            else:
+                # Preserve the whole turn. If the user resumes speaking, the next
+                # speech segment is appended instead of starting a new semantic turn.
+                self.awaiting_endpoint = True
+                await self.send_event("state", value="waiting_for_user_continuation")
 
         if self.turn_predictor.configured:
             prediction = await asyncio.to_thread(
                 self.turn_predictor.predict,
-                vad=self._last_vad,
-                vad_delta=self._last_vad - self._previous_vad,
-                energy=state.energy,
-                energy_delta=state.energy - self._previous_energy,
-                pitch_variation=state.pitch_variation,
-                speech_rate=state.speech_rate,
-                asr_confidence=partial.confidence if partial else 0.0,
-                tom_speaking=self.tom_speaking,
+                vad=self._last_vad, vad_delta=self._last_vad - self._previous_vad,
+                energy=state.energy, energy_delta=state.energy - self._previous_energy,
+                pitch_variation=state.pitch_variation, speech_rate=state.speech_rate,
+                asr_confidence=partial.confidence if partial else 0.0, tom_speaking=self.tom_speaking,
             )
             self._previous_vad = self._last_vad
             self._previous_energy = state.energy
@@ -189,8 +208,7 @@ class LiveVoiceConnection:
         await self.send_event("transcript", text=text, confidence=final.confidence, language=final.language, final=True)
         await self.send_event("state", value="thinking")
         response = await self.runtime.handle(AgentRequest(
-            message=text,
-            conversation_id=self.conversation_id,
+            message=text, conversation_id=self.conversation_id,
             context={"voice_turn": True, "asr_confidence": final.confidence,
                      "user_language": final.language, "user_pitch_hz": state.mean_pitch_hz,
                      "user_pitch_variation": state.pitch_variation, "user_energy": state.energy,
@@ -217,11 +235,13 @@ class LiveVoiceConnection:
             self.audio_sample_rate = int(payload.get("sample_rate", 16000))
             await self.send_event("ready", protocol=2, conversation_id=self.conversation_id, sample_rate=24000,
                                   continuous_audio=True, neural_vad=self._neural_vad,
-                                  learned_turn_prediction=self.turn_predictor.configured)
+                                  learned_turn_prediction=self.turn_predictor.configured,
+                                  smart_turn=self.smart_turn.configured)
         elif event_type == "interrupt":
             await self.interrupt(payload.get("reason", "user_barge_in"))
         elif event_type == "audio_start":
             self.turn_audio.clear()
+            self.awaiting_endpoint = False
             self.asr.reset()
             self.vad.reset()
             await self.send_event("state", value="listening")
