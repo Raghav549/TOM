@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Iterator
 
 from .models import Language, VoiceProfile, VoiceStyle
 
@@ -30,9 +30,7 @@ class CosyVoiceStreamingAdapter:
         try:
             from cosyvoice.cli.cosyvoice import CosyVoice2, CosyVoice3
         except ImportError as exc:
-            raise RuntimeError(
-                "CosyVoice is not installed. Install the official CosyVoice runtime first."
-            ) from exc
+            raise RuntimeError("CosyVoice is not installed. Install the official CosyVoice runtime first.") from exc
         model_cls = CosyVoice3 if self.version == "3" else CosyVoice2
         self._model = model_cls(self.model_dir, load_jit=True, fp16=True)
         self._sample_rate = int(self._model.sample_rate)
@@ -57,14 +55,7 @@ class CosyVoiceStreamingAdapter:
             "Use natural pauses and sentence-final prosody; never add random laughter or fillers."
         )
 
-    def stream(
-        self,
-        text: str,
-        *,
-        language: Language,
-        voice: VoiceProfile,
-        style: VoiceStyle,
-    ) -> Iterator[TTSChunk]:
+    def stream(self, text: str, *, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk]:
         import numpy as np
 
         model = self._load()
@@ -73,7 +64,6 @@ class CosyVoiceStreamingAdapter:
             from cosyvoice.utils.file_utils import load_wav
         except ImportError as exc:
             raise RuntimeError("CosyVoice load_wav helper is unavailable") from exc
-
         prompt_speech_16k = load_wav(ref_path, 16000)
         outputs = model.inference_instruct2(
             text,
