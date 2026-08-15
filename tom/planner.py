@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .models import Plan, Risk, ToolCall
@@ -57,7 +57,7 @@ class ModelPlanner:
 
     llm: Any
     fallback: Planner
-    ui_policy: QwenUIPolicy = QwenUIPolicy()
+    ui_policy: QwenUIPolicy = field(default_factory=QwenUIPolicy)
 
     async def plan(self, goal: str, context: dict[str, Any]) -> Plan:
         tools = context.get("available_tools", [])
