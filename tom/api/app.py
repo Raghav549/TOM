@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from tom.api.bridge_server import install_android_bridge
 from tom.api.device_ws import build_device_websocket
+from tom.api.voice_ws import build_live_voice_websocket
 from tom.approval import ApprovalGate
 from tom.companion import CompanionProfile
 from tom.config import settings
@@ -28,7 +29,7 @@ from tom.voice.engine import ExternalCommandSpeechEngine, SpeechEngineConfig
 from tom.voice.models import VOICE_PROFILES
 from tom.voice.session import VoiceSession
 
-app = FastAPI(title="TOM Agent Runtime", version="0.7.0")
+app = FastAPI(title="TOM Agent Runtime", version="0.8.0")
 profile = CompanionProfile()
 tools = ToolRegistry({})
 device_capabilities = DeviceCapabilityRegistry.android_baseline()
@@ -69,6 +70,10 @@ if vision_base_url and vision_model:
 if vision_runtime is not None:
     app.include_router(build_device_websocket(vision_runtime))
 
+# Live voice is always wired into the API. Heavy ASR/TTS models are loaded lazily
+# only when /v1/voice/ws is actually used.
+app.include_router(build_live_voice_websocket(runtime))
+
 voice_session = VoiceSession(ExternalCommandSpeechEngine(SpeechEngineConfig()))
 
 
@@ -99,7 +104,7 @@ class VoiceSynthesisRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "tom", "version": "0.7.0"}
+    return {"status": "ok", "service": "tom", "version": "0.8.0"}
 
 
 @app.get("/v1/capabilities")
@@ -110,12 +115,16 @@ async def capabilities() -> dict:
             "execution_verification", "memory", "approval", "event_stream",
             "natural_response", "device_capability_discovery", "android_websocket_bridge",
             "multimodal_perception", "screenshot_chunk_reassembly", "semantic_visual_fusion",
+            "live_full_duplex_voice", "android_pcm_stream", "voice_barge_in",
+            "voice_prosody_analysis", "streaming_tts",
         ],
         "model_runtime": settings.llm_enabled,
         "vision_runtime": vision_runtime is not None,
         "voice_profiles": list(VOICE_PROFILES),
         "voice_languages": ["hi", "en", "hinglish", "bn"],
         "voice_engine": bool(os.getenv("TOM_TTS_COMMAND", "").strip()),
+        "streaming_voice_engine": bool(os.getenv("TOM_COSYVOICE_MODEL_DIR", "").strip()),
+        "asr_engine": bool(os.getenv("TOM_ASR_MODEL", "").strip()),
         "device_capabilities": device_capabilities.describe(),
         "communication_adapters": [],
         "tools": tools.describe(),
