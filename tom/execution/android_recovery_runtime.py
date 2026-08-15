@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Awaitable, Callable
 
-from tom.execution.recovery_loop import RecoveryDecision, RecoveryOutcome, RecoveryPolicy
+from tom.execution.recovery_loop import RecoveryPolicy
 from tom.perception.action_plan import GroundedActionPlan
 from tom.perception.action_verifier import ActionVerifier, VerificationResult
 from tom.perception.multimodal_observation import MultimodalObservation
@@ -33,9 +33,9 @@ class AndroidExecutionResult:
 class AndroidActionRecoveryRuntime:
     """Runtime state machine for a grounded Android action.
 
-    The Android bridge is intentionally supplied as callbacks so transport/auth
-    remain independent. A transport ACK is only an execution receipt; success
-    requires a fresh observation and explicit expected-state verification.
+    The Android bridge is supplied as callbacks so transport/auth stay independent.
+    A transport ACK is only an execution receipt; success requires a fresh
+    observation and explicit expected-state verification.
     """
 
     def __init__(self, verifier: ActionVerifier | None = None, policy: RecoveryPolicy | None = None) -> None:
@@ -80,7 +80,7 @@ class AndroidActionRecoveryRuntime:
                 await ask_user("Bhai, expected state nahi mila. Main aur action repeat nahi karunga bina tumhare bolne ke.")
                 return AndroidExecutionResult(self.state, attempt, last, "retry budget exhausted")
 
-            self.state = AndroidExecutionState.REGROUNding if False else AndroidExecutionState.REGROUNDING
+            self.state = AndroidExecutionState.REGROUNDING
             new_plan = await reground(after, current_plan)
             if new_plan is None:
                 self.state = AndroidExecutionState.NEEDS_USER
