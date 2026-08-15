@@ -23,6 +23,7 @@ class AgentRuntime:
     responder: Responder = field(default_factory=FriendlyFallback)
     verifier: ExecutionVerifier = field(default_factory=ExecutionVerifier)
     _pending: dict[str, list[ToolCall]] = field(default_factory=dict)
+    _contexts: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
         self.memory.add(request.conversation_id, "user", request.message, request.context)
@@ -47,6 +48,7 @@ class AgentRuntime:
 
         if pending:
             self._pending[request.conversation_id] = pending
+            self._contexts[request.conversation_id] = context
         reply = await self.responder.respond(user_message=request.message, events=events, context=context)
         self.memory.add(
             request.conversation_id,
@@ -78,17 +80,20 @@ class AgentRuntime:
             raise PermissionError("approved action was not allowed by policy")
 
         events: list[dict[str, Any]] = []
+        context = dict(self._contexts.get(conversation_id, {}))
+        context["approved"] = True
         result = await self._execute(
             call,
             events,
-            context={"approved": True},
+            context=context,
             conversation_id=conversation_id,
             approval_token=token,
         )
         del calls[tool_index]
         if not calls:
             self._pending.pop(conversation_id, None)
-        reply = await self.responder.respond(user_message="approved action", events=events, context={})
+            self._contexts.pop(conversation_id, None)
+        reply = await self.responder.respond(user_message="approved action", events=events, context=context)
         self.memory.add(conversation_id, "assistant", reply, {"events": events, "result": result.model_dump()})
         return {"tool": call.name, "result": result.model_dump(), "reply": reply, "events": events}
 
