@@ -26,9 +26,9 @@ async def _request(method: str, url: str, *, params: dict[str, Any] | None = Non
         return response.json()
 
 
-def _credential(credentials: CredentialManager, provider: str, field: str, env_name: str) -> str:
-    stored = credentials.get(provider) or {}
-    value = str(stored.get(field, "")).strip() or os.getenv(env_name, "").strip()
+def _credential(credentials: CredentialManager | None, provider: str, field: str, env_name: str) -> str:
+    stored = credentials.get(provider) if credentials else None
+    value = str((stored or {}).get(field, "")).strip() or os.getenv(env_name, "").strip()
     if not value:
         raise RuntimeError(f"provider credential not configured: {env_name}")
     return value
@@ -124,8 +124,6 @@ class GooglePlacesSearchTool:
     description: str = "Search real places using Google Places."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        if self.credentials is None:
-            raise RuntimeError("credential manager is not initialized")
         key = _credential(self.credentials, "google_maps", "api_key", "TOM_GOOGLE_MAPS_API_KEY")
         query = str(arguments["query"]).strip()
         if not query:
@@ -144,8 +142,6 @@ class GoogleRoutesTool:
     description: str = "Calculate a driving, walking or bicycling route using Google Routes."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        if self.credentials is None:
-            raise RuntimeError("credential manager is not initialized")
         key = _credential(self.credentials, "google_maps", "api_key", "TOM_GOOGLE_MAPS_API_KEY")
         origin = {"location": {"latLng": {"latitude": float(arguments["origin_lat"]), "longitude": float(arguments["origin_lon"])}}}
         destination = {"location": {"latLng": {"latitude": float(arguments["destination_lat"]), "longitude": float(arguments["destination_lon"])}}}
@@ -163,8 +159,6 @@ class TwilioSmsTool:
     description: str = "Send an SMS through Twilio after explicit TOM approval."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        if self.credentials is None:
-            raise RuntimeError("credential manager is not initialized")
         sid = _credential(self.credentials, "twilio", "account_sid", "TOM_TWILIO_ACCOUNT_SID")
         token = _credential(self.credentials, "twilio", "auth_token", "TOM_TWILIO_AUTH_TOKEN")
         from_number = _credential(self.credentials, "twilio", "from_number", "TOM_TWILIO_FROM_NUMBER")
