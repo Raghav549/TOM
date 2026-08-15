@@ -9,9 +9,17 @@ object TomBridgeRegistry {
 
     fun connect(context: Context, endpoint: String, deviceId: String, secretBase64: String) {
         val secret = Base64.decode(secretBase64, Base64.NO_WRAP)
+        runtime?.disconnect()
         runtime = TomBridgeRuntime(endpoint, deviceId, secret, TomAccessibilityService.instance())
             .also { it.connect() }
     }
+
+    fun disconnect() {
+        runtime?.disconnect()
+        runtime = null
+    }
+
+    fun isConnected(): Boolean = runtime?.isConnected() == true
 
     fun publishObservation(snapshot: String) {
         runtime?.sendObservation(snapshot)
