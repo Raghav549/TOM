@@ -21,14 +21,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
 
-/**
- * Real Android full-duplex TOM voice transport.
- *
- * Mic: 16 kHz mono PCM16 -> WebSocket binary frames.
- * Speaker: 24 kHz mono PCM16 <- WebSocket binary frames.
- * Local energy VAD detects speech boundaries and immediately sends an interrupt
- * when the user starts talking while TOM is speaking.
- */
+/** Real Android full-duplex TOM voice transport. */
 class TomVoiceLoop(
     private val context: Context,
     private val endpoint: String,
@@ -40,7 +33,7 @@ class TomVoiceLoop(
     companion object {
         private const val INPUT_RATE = 16_000
         private const val OUTPUT_RATE = 24_000
-        private const val FRAME_SAMPLES = 320 // 20 ms at 16 kHz
+        private const val FRAME_SAMPLES = 320
         private const val START_RMS = 0.020f
         private const val CONTINUE_RMS = 0.014f
         private const val START_FRAMES = 2
@@ -55,7 +48,6 @@ class TomVoiceLoop(
     private var echoCanceler: AcousticEchoCanceler? = null
     private val running = AtomicBoolean(false)
     private var tomSpeaking = false
-    private var userSpeaking = false
 
     fun start() {
         if (running.getAndSet(true)) return
@@ -73,7 +65,7 @@ class TomVoiceLoop(
         socket = null
         stopRecorder()
         stopPlayback()
-        executor.shutdownNow()
+        client.dispatcher.executorService.shutdown()
     }
 
     private fun connect() {
@@ -81,23 +73,22 @@ class TomVoiceLoop(
         val request = Request.Builder().url(endpoint).build()
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                val hello = JSONObject()
-                    .put("type", "hello")
-                    .put("protocol", 1)
-                    .put("voice_id", voiceId)
-                    .put("sample_rate", INPUT_RATE)
-                webSocket.send(hello.toString())
+                webSocket.send(
+                    JSONObject()
+                        .put("type", "hello")
+                        .put("protocol", 1)
+                        .put("voice_id", voiceId)
+                        .put("sample_rate", INPUT_RATE)
+                        .toString()
+                )
                 onState("connected")
                 startPlayback()
                 startRecorder()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                try {
-                    handleEvent(JSONObject(text))
-                } catch (t: Throwable) {
-                    onError("Invalid voice event: ${t.message}")
-                }
+                runCatching { handleEvent(JSONObject(text)) }
+                    .onFailure { onError("Invalid voice event: ${it.message}") }
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
@@ -110,12 +101,6 @@ class TomVoiceLoop(
                 tomSpeaking = false
                 onState("disconnected")
                 onError(t.message ?: "voice WebSocket failure")
-                if (running.get()) {
-                    executor.execute {
-                        Thread.sleep(800)
-                        if (running.get()) connect()
-                    }
-                }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -134,11 +119,17 @@ class TomVoiceLoop(
             "audio_start" -> {
                 tomSpeaking = true
                 ensureTrack()
+                track?.play()
                 onState("speaking")
             }
-            "audio_stop", "audio_end" -> {
+            "audio_stop" -> {
                 tomSpeaking = false
-                if (event.optString("type") == "audio_stop") track?.pause()
+                track?.pause()
+                track?.flush()
+                onState("listening")
+            }
+            "audio_end" -> {
+                tomSpeaking = false
                 onState("listening")
             }
             "response" -> onState("speaking")
@@ -168,7 +159,6 @@ class TomVoiceLoop(
             var speechFrames = 0
             var silenceMs = 0
             var sentTurn = false
-
             try {
                 local.startRecording()
                 while (running.get()) {
@@ -181,27 +171,25 @@ class TomVoiceLoop(
                         silenceMs = 0
                         if (!sentTurn && speechFrames >= START_FRAMES) {
                             sentTurn = true
-                            userSpeaking = true
                             if (tomSpeaking) {
-                                socket?.send(JSONObject().put("type", "interrupt").put("reason", "user_barge_in").toString())
+                                socket?.send(
+                                    JSONObject().put("type", "interrupt").put("reason", "user_barge_in").toString()
+                                )
                             }
-                            socket?.send(JSONObject().put("type", "audio_start").put("sample_rate", INPUT_RATE).toString())
+                            socket?.send(
+                                JSONObject().put("type", "audio_start").put("sample_rate", INPUT_RATE).toString()
+                            )
                             onState(if (tomSpeaking) "interrupting" else "listening")
                         }
-                        if (sentTurn) {
-                            socket?.send(okio.ByteString.of(shortsToBytes(frame, read)))
-                        }
+                        if (sentTurn) socket?.send(okio.ByteString.of(shortsToBytes(frame, read)))
                     } else if (sentTurn) {
                         silenceMs += 20
-                        // Send a little trailing silence so server-side ASR keeps
-                        // the final phoneme boundary intact.
                         socket?.send(okio.ByteString.of(shortsToBytes(frame, read)))
                         if (silenceMs >= END_SILENCE_MS) {
                             socket?.send(JSONObject().put("type", "audio_end").toString())
                             sentTurn = false
                             speechFrames = 0
                             silenceMs = 0
-                            userSpeaking = false
                             onState("thinking")
                         }
                     } else {
@@ -211,7 +199,7 @@ class TomVoiceLoop(
             } catch (t: Throwable) {
                 if (running.get()) onError("Microphone loop failed: ${t.message}")
             } finally {
-                try { local.stop() } catch (_: Throwable) {}
+                runCatching { local.stop() }
                 local.release()
                 echoCanceler?.release()
                 echoCanceler = null
