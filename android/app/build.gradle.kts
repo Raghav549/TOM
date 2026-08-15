@@ -13,6 +13,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        buildConfigField("String", "TOM_VOICE_WS_URL", "\"ws://10.0.2.2:8787/v1/voice/ws\"")
     }
 
     buildFeatures {
