@@ -26,10 +26,11 @@ async def _request(method: str, url: str, *, params: dict[str, Any] | None = Non
         return response.json()
 
 
-def _key(name: str) -> str:
-    value = os.getenv(name, "").strip()
+def _credential(credentials: CredentialManager, provider: str, field: str, env_name: str) -> str:
+    stored = credentials.get(provider) or {}
+    value = str(stored.get(field, "")).strip() or os.getenv(env_name, "").strip()
     if not value:
-        raise RuntimeError(f"provider credential not configured: {name}")
+        raise RuntimeError(f"provider credential not configured: {env_name}")
     return value
 
 
@@ -117,12 +118,15 @@ class GmailSendTool:
 
 @dataclass
 class GooglePlacesSearchTool:
+    credentials: CredentialManager | None = None
     name: str = "maps.places_search"
     risk: Risk = Risk.READ
-    description: str = "Search real places using Google Places when a Places API key is configured."
+    description: str = "Search real places using Google Places."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        key = _key("TOM_GOOGLE_MAPS_API_KEY")
+        if self.credentials is None:
+            raise RuntimeError("credential manager is not initialized")
+        key = _credential(self.credentials, "google_maps", "api_key", "TOM_GOOGLE_MAPS_API_KEY")
         query = str(arguments["query"]).strip()
         if not query:
             raise ValueError("query is required")
@@ -134,12 +138,15 @@ class GooglePlacesSearchTool:
 
 @dataclass
 class GoogleRoutesTool:
+    credentials: CredentialManager | None = None
     name: str = "maps.route"
     risk: Risk = Risk.READ
     description: str = "Calculate a driving, walking or bicycling route using Google Routes."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        key = _key("TOM_GOOGLE_MAPS_API_KEY")
+        if self.credentials is None:
+            raise RuntimeError("credential manager is not initialized")
+        key = _credential(self.credentials, "google_maps", "api_key", "TOM_GOOGLE_MAPS_API_KEY")
         origin = {"location": {"latLng": {"latitude": float(arguments["origin_lat"]), "longitude": float(arguments["origin_lon"])}}}
         destination = {"location": {"latLng": {"latitude": float(arguments["destination_lat"]), "longitude": float(arguments["destination_lon"])}}}
         mode = str(arguments.get("travel_mode", "DRIVE")).upper()
@@ -150,12 +157,17 @@ class GoogleRoutesTool:
 
 @dataclass
 class TwilioSmsTool:
+    credentials: CredentialManager | None = None
     name: str = "communication.sms_send"
     risk: Risk = Risk.HIGH
     description: str = "Send an SMS through Twilio after explicit TOM approval."
 
     async def run(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        sid, token, from_number = _key("TOM_TWILIO_ACCOUNT_SID"), _key("TOM_TWILIO_AUTH_TOKEN"), _key("TOM_TWILIO_FROM_NUMBER")
+        if self.credentials is None:
+            raise RuntimeError("credential manager is not initialized")
+        sid = _credential(self.credentials, "twilio", "account_sid", "TOM_TWILIO_ACCOUNT_SID")
+        token = _credential(self.credentials, "twilio", "auth_token", "TOM_TWILIO_AUTH_TOKEN")
+        from_number = _credential(self.credentials, "twilio", "from_number", "TOM_TWILIO_FROM_NUMBER")
         to, body = str(arguments["to"]).strip(), str(arguments["body"]).strip()
         if not to or not body:
             raise ValueError("to and body are required")
@@ -164,6 +176,6 @@ class TwilioSmsTool:
 
 def register_integration_tools(registry: ToolRegistry, credentials: CredentialManager) -> GoogleOAuth:
     oauth = GoogleOAuth(credentials)
-    for tool in (GoogleCalendarListTool(oauth=oauth), GoogleCalendarCreateTool(oauth=oauth), GmailSearchTool(oauth=oauth), GmailSendTool(oauth=oauth), GooglePlacesSearchTool(), GoogleRoutesTool(), TwilioSmsTool()):
+    for tool in (GoogleCalendarListTool(oauth=oauth), GoogleCalendarCreateTool(oauth=oauth), GmailSearchTool(oauth=oauth), GmailSendTool(oauth=oauth), GooglePlacesSearchTool(credentials), GoogleRoutesTool(credentials), TwilioSmsTool(credentials)):
         registry.register(tool)
     return oauth
