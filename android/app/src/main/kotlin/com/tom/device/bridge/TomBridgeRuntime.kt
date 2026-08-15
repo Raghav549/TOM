@@ -3,13 +3,14 @@ package com.tom.device.bridge
 import android.util.Log
 import com.tom.device.TomAccessibilityService
 import com.tom.device.TomActionExecutor
+import com.tom.device.TomCommentaryPlayer
 import com.tom.device.TomLiveActivityStore
 import com.tom.device.ActionRequest
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
-/** Android-side bridge runtime with policy-gated perception and real action execution. */
+/** Android-side bridge runtime with policy-gated perception, action execution and live commentary. */
 class TomBridgeRuntime(
     private val endpoint: String,
     private val deviceId: String,
@@ -21,6 +22,7 @@ class TomBridgeRuntime(
     private val screenshotCapture = TomScreenshotCapture(service)
     private val screenshotChunker = TomScreenshotChunker()
     private val actionExecutor = TomActionExecutor(service)
+    private val commentary = TomCommentaryPlayer(service)
 
     fun connect() {
         client?.close("reconnect")
@@ -31,6 +33,7 @@ class TomBridgeRuntime(
     fun disconnect() {
         client?.close("client_disconnect")
         client = null
+        commentary.stop()
         TomLiveActivityStore.add("transport", "Disconnected", "TOM Core connection closed", true)
     }
 
@@ -48,7 +51,7 @@ class TomBridgeRuntime(
                 "action_request" -> handleAction(envelope)
                 "screenshot_request" -> captureScreenshot(envelope)
                 "observation_request" -> captureObservation(envelope)
-                "voice_commentary" -> TomLiveActivityStore.add("voice", "TOM", envelope.optJSONObject("payload")?.optString("text", "") ?: "")
+                "voice_commentary" -> handleVoiceCommentary(envelope.optJSONObject("payload"))
                 "task_event" -> handleTaskEvent(envelope.optJSONObject("payload") ?: envelope)
                 "ping" -> sendEnvelope("pong", JSONObject())
                 "revoke" -> disconnect()
@@ -58,6 +61,32 @@ class TomBridgeRuntime(
             Log.e("TOM", "invalid bridge message", t)
             TomLiveActivityStore.add("error", "Bridge error", t.message ?: "invalid message")
         }
+    }
+
+    private fun handleVoiceCommentary(payload: JSONObject?) {
+        val text = payload?.optString("text", "") ?: ""
+        if (text.isNotBlank()) {
+            commentary.speak(text, payload?.optString("language")?.takeIf { it.isNotBlank() })
+            TomLiveActivityStore.add("voice", "TOM", text)
+        }
+    }
+
+    private fun handleTaskEvent(payload: JSONObject) {
+        val event = payload.optJSONObject("payload") ?: payload
+        val type = event.optString("type", "task")
+        val data = event.optJSONObject("payload") ?: event
+        val title = when (type) {
+            "TASK_STARTED", "task.started" -> "TOM started"
+            "TASK_COMPLETED", "task.completed" -> "Done"
+            "TASK_FAILED", "task.failed" -> "Task failed"
+            "action.started", "action.requested", "ACTION" -> "Working"
+            "verification.started", "VERIFICATION", "OBSERVATION" -> "Checking"
+            else -> type.replace('_', ' ').replace('.', ' ')
+        }
+        val detail = data.optString("message", data.optString("reply", data.optString("tool", "")))
+        val voiceText = data.optString("voice_text", "")
+        TomLiveActivityStore.add("task", title, detail, type == "TASK_FAILED" || type == "task.failed")
+        if (voiceText.isNotBlank()) commentary.speak(voiceText, data.optString("language").takeIf { it.isNotBlank() })
     }
 
     fun sendObservation(snapshot: String, taskId: String? = null, actionId: String? = null) {
@@ -124,7 +153,6 @@ class TomBridgeRuntime(
         val approval = payload.optString("approval_token").takeIf { it.isNotBlank() }
         val action = payload.optString("action")
         val args = payload.optJSONObject("arguments") ?: JSONObject()
-
         TomLiveActivityStore.add("action", "Working", action)
         if (taskId.isBlank()) {
             sendResult(taskId, actionId, false, "missing_task_id")
@@ -135,11 +163,8 @@ class TomBridgeRuntime(
             TomLiveActivityStore.add("approval", "Confirmation required", action)
             return
         }
-
         val request = ActionRequest(
-            actionId = actionId,
-            approvalToken = approval,
-            action = action,
+            actionId = actionId, approvalToken = approval, action = action,
             targetNodeId = args.optString("node_id").takeIf { it.isNotBlank() },
             targetText = args.optString("target_text").takeIf { it.isNotBlank() },
             targetDescription = args.optString("target_description").takeIf { it.isNotBlank() },
@@ -156,42 +181,22 @@ class TomBridgeRuntime(
             y = if (args.has("y")) args.optDouble("y").toFloat() else null,
             endX = if (args.has("x2")) args.optDouble("x2").toFloat() else null,
             endY = if (args.has("y2")) args.optDouble("y2").toFloat() else null,
-            durationMs = args.optLong("duration_ms", 450L),
-            longPressMs = args.optLong("long_press_ms", 650L),
+            durationMs = args.optLong("duration_ms", 450L), longPressMs = args.optLong("long_press_ms", 650L),
             startMillis = if (args.has("start_millis")) args.optLong("start_millis") else null,
             endMillis = if (args.has("end_millis")) args.optLong("end_millis") else null,
             location = args.optString("location").takeIf { it.isNotBlank() },
         )
-
         val result = actionExecutor.execute(request)
         sendResult(taskId, actionId, result.accepted, if (result.completed) "completed" else (result.error ?: "not_completed"))
         TomLiveActivityStore.add(if (result.completed) "verified_pending" else "action_failed", if (result.completed) "Action executed" else "Action failed", result.error ?: action)
     }
 
-    private fun handleTaskEvent(payload: JSONObject) {
-        val type = payload.optString("type", "task")
-        val title = payload.optString("title", type.replace('_', ' '))
-        val detail = payload.optString("detail", payload.optString("message", ""))
-        TomLiveActivityStore.add("task", title, detail, type.endsWith(".stopped"))
-    }
-
     private fun sendResult(taskId: String, actionId: String, accepted: Boolean, status: String) {
-        sendEnvelope("action_result", JSONObject().apply {
-            put("task_id", taskId)
-            put("action_id", actionId)
-            put("accepted", accepted)
-            put("status", status)
-        })
+        sendEnvelope("action_result", JSONObject().apply { put("task_id", taskId); put("action_id", actionId); put("accepted", accepted); put("status", status) })
     }
 
     private fun sendEnvelope(type: String, payload: JSONObject) {
-        client?.sendJson(JSONObject().apply {
-            put("type", type)
-            put("message_id", UUID.randomUUID().toString())
-            put("sequence", sequence.incrementAndGet())
-            put("device_id", deviceId)
-            put("payload", payload)
-        })
+        client?.sendJson(JSONObject().apply { put("type", type); put("message_id", UUID.randomUUID().toString()); put("sequence", sequence.incrementAndGet()); put("device_id", deviceId); put("payload", payload) })
     }
 
     override fun onDisconnected(reason: String) {
