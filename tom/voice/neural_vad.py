@@ -13,13 +13,14 @@ class VADDecision:
 
 
 class SileroStreamingVAD:
-    """Real Silero VAD state machine for 16 kHz PCM16 streams."""
+    """Real Silero VAD state machine for a continuous 16 kHz PCM16 stream."""
 
     def __init__(self, threshold: float | None = None, min_speech_ms: int = 160, min_silence_ms: int = 420) -> None:
         self.threshold = threshold if threshold is not None else float(os.getenv("TOM_VAD_THRESHOLD", "0.55"))
         self.min_speech_ms = min_speech_ms
         self.min_silence_ms = min_silence_ms
         self._model = None
+        self._pending = bytearray()
         self._speech_ms = 0
         self._silence_ms = 0
         self._in_speech = False
@@ -34,9 +35,12 @@ class SileroStreamingVAD:
         self._model = load_silero_vad()
 
     def reset(self) -> None:
+        self._pending.clear()
         self._speech_ms = 0
         self._silence_ms = 0
         self._in_speech = False
+        if self._model is not None and hasattr(self._model, "reset_states"):
+            self._model.reset_states()
 
     def process(self, pcm16: bytes, sample_rate: int = 16_000) -> VADDecision:
         if sample_rate != 16_000:
@@ -47,24 +51,30 @@ class SileroStreamingVAD:
         import numpy as np
         import torch
 
-        audio = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
-        if audio.size == 0:
-            return VADDecision(0.0, self._in_speech, False, False)
-        probability = float(self._model(torch.from_numpy(audio), 16_000).item())
-        frame_ms = max(1, int(audio.size * 1000 / sample_rate))
+        self._pending.extend(pcm16)
+        frame_bytes = 512 * 2
+        probabilities: list[float] = []
         start = False
         end = False
-        if probability >= self.threshold:
-            self._speech_ms += frame_ms
-            self._silence_ms = 0
-            if not self._in_speech and self._speech_ms >= self.min_speech_ms:
-                self._in_speech = True
-                start = True
-        else:
-            self._silence_ms += frame_ms
-            if self._in_speech and self._silence_ms >= self.min_silence_ms:
-                self._in_speech = False
-                self._speech_ms = 0
+        while len(self._pending) >= frame_bytes:
+            frame = bytes(self._pending[:frame_bytes])
+            del self._pending[:frame_bytes]
+            audio = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+            probability = float(self._model(torch.from_numpy(audio), 16_000).item())
+            probabilities.append(probability)
+            frame_ms = 32
+            if probability >= self.threshold:
+                self._speech_ms += frame_ms
                 self._silence_ms = 0
-                end = True
+                if not self._in_speech and self._speech_ms >= self.min_speech_ms:
+                    self._in_speech = True
+                    start = True
+            else:
+                self._silence_ms += frame_ms
+                if self._in_speech and self._silence_ms >= self.min_silence_ms:
+                    self._in_speech = False
+                    self._speech_ms = 0
+                    self._silence_ms = 0
+                    end = True
+        probability = probabilities[-1] if probabilities else (self.threshold if self._in_speech else 0.0)
         return VADDecision(probability, self._in_speech, start, end)
