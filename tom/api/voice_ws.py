@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -32,7 +31,8 @@ class LiveVoiceConnection:
 
     Android sends 16 kHz mono PCM16 speech frames. TOM transcribes completed
     turns, runs the existing agent runtime, and streams real TTS PCM16 back.
-    A user speech event during TTS cancels the active synthesis task immediately.
+    The receive loop stays live while ASR/LLM/TTS work runs in tasks, so a
+    barge-in can reach the cancellation path immediately.
     """
 
     def __init__(self, websocket: WebSocket, runtime: AgentRuntime) -> None:
@@ -46,11 +46,14 @@ class LiveVoiceConnection:
         self.audio = bytearray()
         self.audio_sample_rate = 16000
         self.tts_task: asyncio.Task | None = None
+        self.turn_task: asyncio.Task | None = None
         self.tom_speaking = False
         self.voice_id = "tom_m1"
 
     async def send_event(self, event_type: str, **payload) -> None:
-        await self.websocket.send_text(json.dumps({"type": event_type, **payload}, ensure_ascii=False))
+        await self.websocket.send_text(
+            json.dumps({"type": event_type, **payload}, ensure_ascii=False)
+        )
 
     async def interrupt(self, reason: str = "user_barge_in") -> None:
         if self.tts_task and not self.tts_task.done():
@@ -70,7 +73,13 @@ class LiveVoiceConnection:
         )
         await self.send_event("audio_stop", reason=reason)
 
-    async def speak(self, text: str, *, voice_id: str | None = None, signals: ConversationSignals | None = None) -> None:
+    async def speak(
+        self,
+        text: str,
+        *,
+        voice_id: str | None = None,
+        signals: ConversationSignals | None = None,
+    ) -> None:
         selected = voice_id or self.voice_id
         if selected not in VOICE_PROFILES:
             selected = "tom_m1"
@@ -201,7 +210,11 @@ class LiveVoiceConnection:
                 TurnSignal(user_voice_active=False, user_stopped_ms_ago=500),
                 tom_speaking=self.tom_speaking,
             )
-            await self.process_turn()
+            if self.turn_task and not self.turn_task.done():
+                await self.send_event("state", value="busy")
+                self.audio.clear()
+            else:
+                self.turn_task = asyncio.create_task(self.process_turn())
 
     async def run(self) -> None:
         await self.send_event("connected", protocol=1)
@@ -217,9 +230,12 @@ class LiveVoiceConnection:
         except WebSocketDisconnect:
             return
         finally:
-            if self.tts_task and not self.tts_task.done():
-                self.tts_task.cancel()
-                await asyncio.gather(self.tts_task, return_exceptions=True)
+            for task in (self.tts_task, self.turn_task):
+                if task and not task.done():
+                    task.cancel()
+            tasks = [task for task in (self.tts_task, self.turn_task) if task]
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def build_live_voice_websocket(runtime: AgentRuntime) -> APIRouter:
