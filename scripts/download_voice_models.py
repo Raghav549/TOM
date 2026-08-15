@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-
 SMART_TURN_REPO = "pipecat-ai/smart-turn-v3"
 SMART_TURN_FILE = "smart-turn-v3.2-cpu.onnx"
 
