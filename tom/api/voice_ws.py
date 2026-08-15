@@ -86,12 +86,12 @@ class LiveVoiceConnection:
             self.pending_tts_text = text
             self.pending_tts_index = 0
         segments = [x.strip() for x in re.split(r"(?<=[.!?।])\s+", self.pending_tts_text or "") if x.strip()]
-        turn = VoiceSession(self.tts).prepare_turn(" ".join(segments[self.pending_tts_index:]), voice_id=selected, signals=signals)
+        remaining = " ".join(segments[self.pending_tts_index:])
+        turn = VoiceSession(self.tts).prepare_turn(remaining, voice_id=selected, signals=signals)
         self.tom_speaking = True
         try:
             await self.send_event("audio_start", sample_rate=24000, channels=1, encoding="pcm_s16le",
-                                  text=" ".join(segments[self.pending_tts_index:]), voice_id=selected,
-                                  resumed=resume)
+                                  text=remaining, voice_id=selected, resumed=resume)
             for index in range(self.pending_tts_index, len(segments)):
                 self.pending_tts_index = index
                 segment = segments[index]
@@ -105,8 +105,6 @@ class LiveVoiceConnection:
                 self.pending_tts_index = index + 1
             self.pending_tts_text = None
             self.pending_tts_index = 0
-        except asyncio.CancelledError:
-            raise
         finally:
             self.tom_speaking = False
             await self.send_event("audio_end")
@@ -173,7 +171,6 @@ class LiveVoiceConnection:
     async def process_turn(self, pcm: bytes) -> None:
         if len(pcm) < 3200:
             return
-        # A new semantic turn supersedes any old interrupted response.
         self.pending_tts_text = None
         self.pending_tts_index = 0
         await self.send_event("state", value="transcribing")
