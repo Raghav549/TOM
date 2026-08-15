@@ -187,7 +187,7 @@ class AgentRuntime:
             events.append({"type": "tool.completed", "tool": call.name, "verified": True})
             await self.events_bus.publish("action.finished", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": True, "output": output})
             return result
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - tool adapters are untrusted plugin boundaries.
             if live:
                 live.action_finished(False, str(exc))
             events.append({"type": "VERIFICATION", "verified": False, "reason": str(exc), "action_id": action_id})
