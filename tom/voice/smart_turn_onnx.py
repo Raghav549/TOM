@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-import numpy as np
-
 
 @dataclass(frozen=True)
 class SmartTurnDecision:
@@ -42,7 +40,9 @@ class SmartTurnONNX:
         return self._session
 
     @staticmethod
-    def _mel(audio: np.ndarray) -> np.ndarray:
+    def _mel(audio):
+        import numpy as np
+
         # Keep this implementation dependency-light; Pipecat's vendored feature
         # extractor can be selected through TOM_SMART_TURN_USE_PIPECAT=1.
         try:
@@ -60,6 +60,8 @@ class SmartTurnONNX:
     def predict(self, pcm16: bytes, sample_rate: int = 16_000) -> SmartTurnDecision:
         if sample_rate != 16_000:
             raise ValueError("Smart Turn requires 16 kHz PCM16 audio")
+        import numpy as np
+
         audio = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
         target = 8 * 16_000
         if audio.size > target:
