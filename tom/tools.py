@@ -9,6 +9,8 @@ from .models import Risk, ToolCall
 class Tool(Protocol):
     name: str
     risk: Risk
+    description: str
+
     async def run(self, arguments: dict[str, Any]) -> Any: ...
 
 
@@ -27,3 +29,9 @@ class ToolRegistry:
         except KeyError as exc:
             raise KeyError(f"unknown tool: {call.name}") from exc
         return tool
+
+    def describe(self) -> list[dict[str, Any]]:
+        return [
+            {"name": tool.name, "description": tool.description, "risk": tool.risk.value}
+            for tool in self.tools.values()
+        ]
