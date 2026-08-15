@@ -3,9 +3,9 @@ from __future__ import annotations
 """Typed capability catalogue for external API adapters.
 
 The public-apis repository is a discovery directory, not an execution layer.
-TOM only executes providers represented by a typed adapter with an explicit
-risk classification and credential policy. Credentialed providers remain
-non-executable in the default catalogue until their secret is configured.
+TOM executes typed adapters through the same AgentRuntime policy/approval path.
+Credentialed providers remain non-executable in the default catalogue until
+credentials are configured.
 """
 
 from dataclasses import dataclass
@@ -50,9 +50,11 @@ CATALOG: tuple[PublicAPIEntry, ...] = (
     PublicAPIEntry("serpstack", "Search", "Serpstack", "Search-engine result data", AuthMode.API_KEY, True, False, "api.search", "TOM_SERPSTACK_KEY"),
     PublicAPIEntry("marketstack", "Finance", "Marketstack", "Worldwide stock market data", AuthMode.API_KEY, True, False, "api.stocks", "TOM_MARKETSTACK_KEY"),
     PublicAPIEntry("mailboxlayer", "Email", "Mailboxlayer", "Email validation", AuthMode.API_KEY, True, False, "api.email_validate", "TOM_MAILBOXLAYER_KEY"),
-    PublicAPIEntry("weatherstack", "Weather", "Weatherstack", "Weather data", AuthMode.API_KEY, True, False),
-    PublicAPIEntry("google-calendar", "Calendar", "Google Calendar", "Calendar event management", AuthMode.OAUTH, True, False),
-    PublicAPIEntry("google-gmail", "Email", "Gmail", "Email send/read operations", AuthMode.OAUTH, True, False),
+    PublicAPIEntry("google-calendar", "Calendar", "Google Calendar", "Calendar event read/create via OAuth", AuthMode.OAUTH, True, False, "google.calendar_list", "TOM_GOOGLE_CLIENT_ID/TOM_GOOGLE_CLIENT_SECRET"),
+    PublicAPIEntry("google-gmail", "Email", "Gmail", "Gmail search/send via OAuth", AuthMode.OAUTH, True, False, "google.gmail_search", "TOM_GOOGLE_CLIENT_ID/TOM_GOOGLE_CLIENT_SECRET"),
+    PublicAPIEntry("google-places", "Maps", "Google Places", "Place search and place metadata", AuthMode.API_KEY, True, False, "maps.places_search", "TOM_GOOGLE_MAPS_API_KEY"),
+    PublicAPIEntry("google-routes", "Maps", "Google Routes", "Real route calculation and navigation steps", AuthMode.API_KEY, True, False, "maps.route", "TOM_GOOGLE_MAPS_API_KEY"),
+    PublicAPIEntry("twilio", "Communication", "Twilio", "Outbound SMS", AuthMode.API_KEY, True, False, "communication.sms_send", "TOM_TWILIO_ACCOUNT_SID/TOM_TWILIO_AUTH_TOKEN/TOM_TWILIO_FROM_NUMBER"),
 )
 
 
