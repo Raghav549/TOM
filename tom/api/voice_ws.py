@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -12,12 +13,12 @@ from tom.runtime import AgentRuntime
 from tom.voice.cosyvoice_stream import CosyVoiceStreamingAdapter, TTSChunk
 from tom.voice.director import ConversationSignals
 from tom.voice.models import VOICE_PROFILES
+from tom.voice.neural_vad import SileroStreamingVAD
 from tom.voice.prosody_state import ContinuousProsodyTracker
 from tom.voice.session import VoiceSession
 from tom.voice.streaming_asr import StreamingFasterWhisper
 from tom.voice.turn_predictor import LearnedTurnPredictor
 from tom.voice.turntaking import DuplexTurnManager, TurnSignal
-from tom.voice.neural_vad import SileroStreamingVAD
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 
@@ -30,12 +31,7 @@ def _next_or_none(iterator):
 
 
 class LiveVoiceConnection:
-    """Continuous full-duplex voice transport.
-
-    The socket carries continuous 16 kHz PCM16 frames. Neural VAD determines
-    turn boundaries, streaming ASR emits partial transcripts, prosody is tracked
-    continuously, and the TTS task is cancellable at any point.
-    """
+    """Continuous full-duplex voice transport with neural turn control."""
 
     def __init__(self, websocket: WebSocket, runtime: AgentRuntime) -> None:
         self.websocket = websocket
@@ -56,10 +52,13 @@ class LiveVoiceConnection:
         self.tom_speaking = False
         self.tts_task: asyncio.Task | None = None
         self.turn_task: asyncio.Task | None = None
+        self.pending_tts_text: str | None = None
+        self.pending_tts_index = 0
         self._last_vad = 0.0
-        self._last_energy = 0.0
         self._last_prosody_emit_ms = 0
         self._audio_ms = 0
+        self._previous_vad = 0.0
+        self._previous_energy = 0.0
         self._neural_vad = os.getenv("TOM_NEURAL_VAD", "1").lower() not in {"0", "false", "no"}
 
     async def send_event(self, event_type: str, **payload) -> None:
@@ -72,32 +71,40 @@ class LiveVoiceConnection:
         self.tts_task = None
         self.tom_speaking = False
         self.turns.update(
-            TurnSignal(
-                user_voice_active=True,
-                user_voice_duration_ms=200,
-                user_speech_confidence=0.95,
-                user_started_while_tom_speaking=True,
-                explicit_interrupt=True,
-            ),
+            TurnSignal(user_voice_active=True, user_voice_duration_ms=200, user_speech_confidence=0.95,
+                       user_started_while_tom_speaking=True, explicit_interrupt=True),
             tom_speaking=True,
         )
-        await self.send_event("audio_stop", reason=reason, cancelled=True)
+        await self.send_event("audio_stop", reason=reason, cancelled=True, resumable=bool(self.pending_tts_text))
 
-    async def speak(self, text: str, *, voice_id: str | None = None, signals: ConversationSignals | None = None) -> None:
+    async def speak(self, text: str, *, voice_id: str | None = None, signals: ConversationSignals | None = None,
+                    resume: bool = False) -> None:
         selected = voice_id or self.voice_id
         if selected not in VOICE_PROFILES:
             selected = "tom_m1"
-        turn = VoiceSession(self.tts).prepare_turn(text, voice_id=selected, signals=signals)
-        await self.send_event("audio_start", sample_rate=24000, channels=1, encoding="pcm_s16le", text=text, voice_id=selected)
+        if not resume:
+            self.pending_tts_text = text
+            self.pending_tts_index = 0
+        segments = [x.strip() for x in re.split(r"(?<=[.!?।])\s+", self.pending_tts_text or "") if x.strip()]
+        turn = VoiceSession(self.tts).prepare_turn(" ".join(segments[self.pending_tts_index:]), voice_id=selected, signals=signals)
         self.tom_speaking = True
-        iterator = self.tts.stream(turn.text, language=turn.language, voice=VOICE_PROFILES[selected], style=turn.style)
         try:
-            while True:
-                chunk: TTSChunk | None = await asyncio.to_thread(_next_or_none, iterator)
-                if chunk is None:
-                    break
-                await self.websocket.send_bytes(chunk.pcm16)
-                await asyncio.sleep(0)
+            await self.send_event("audio_start", sample_rate=24000, channels=1, encoding="pcm_s16le",
+                                  text=" ".join(segments[self.pending_tts_index:]), voice_id=selected,
+                                  resumed=resume)
+            for index in range(self.pending_tts_index, len(segments)):
+                self.pending_tts_index = index
+                segment = segments[index]
+                iterator = self.tts.stream(segment, language=turn.language, voice=VOICE_PROFILES[selected], style=turn.style)
+                while True:
+                    chunk: TTSChunk | None = await asyncio.to_thread(_next_or_none, iterator)
+                    if chunk is None:
+                        break
+                    await self.websocket.send_bytes(chunk.pcm16)
+                    await asyncio.sleep(0)
+                self.pending_tts_index = index + 1
+            self.pending_tts_text = None
+            self.pending_tts_index = 0
         except asyncio.CancelledError:
             raise
         finally:
@@ -113,29 +120,20 @@ class LiveVoiceConnection:
         vad_decision = await asyncio.to_thread(self.vad.process, pcm, self.audio_sample_rate) if self._neural_vad else None
         state = await asyncio.to_thread(self.prosody.update, pcm, self.audio_sample_rate)
         self._last_vad = vad_decision.speech_probability if vad_decision else self._last_vad
-        self._last_energy = state.energy
 
         if self._audio_ms - self._last_prosody_emit_ms >= 160:
             self._last_prosody_emit_ms = self._audio_ms
-            await self.send_event(
-                "prosody",
-                continuous=True,
-                pitch_hz=state.mean_pitch_hz,
-                pitch_variation=state.pitch_variation,
-                energy=state.energy,
-                energy_variation=state.energy_variation,
-                speech_rate=state.speech_rate,
-                arousal=state.arousal,
-                valence_hint=state.valence_hint,
-                confidence=state.confidence,
-                vad_probability=self._last_vad,
-            )
+            await self.send_event("prosody", continuous=True, pitch_hz=state.mean_pitch_hz,
+                                  pitch_variation=state.pitch_variation, energy=state.energy,
+                                  energy_variation=state.energy_variation, speech_rate=state.speech_rate,
+                                  arousal=state.arousal, valence_hint=state.valence_hint,
+                                  confidence=state.confidence, vad_probability=self._last_vad)
 
         partial = await asyncio.to_thread(self.asr.push, pcm, self.audio_sample_rate)
         if partial is not None and partial.text.strip():
             await self.send_event("partial_transcript", text=partial.text, confidence=partial.confidence, language=partial.language)
 
-        if vad_decision is not None and vad_decision.start:
+        if vad_decision and vad_decision.start:
             if self.tom_speaking:
                 await self.interrupt("neural_vad_barge_in")
             self.turn_audio = bytearray(self.pre_roll)
@@ -143,23 +141,22 @@ class LiveVoiceConnection:
             self.prosody.reset()
             await self.send_event("state", value="listening")
 
-        if vad_decision is not None and vad_decision.speech:
+        if vad_decision and vad_decision.speech:
             self.turn_audio.extend(pcm)
 
-        if vad_decision is not None and vad_decision.end:
+        if vad_decision and vad_decision.end:
             self.turn_audio.extend(pcm)
-            if self.turn_task and not self.turn_task.done():
-                return
-            self.turn_task = asyncio.create_task(self.process_turn(bytes(self.turn_audio)))
+            if not self.turn_task or self.turn_task.done():
+                self.turn_task = asyncio.create_task(self.process_turn(bytes(self.turn_audio)))
             self.turn_audio.clear()
 
         if self.turn_predictor.configured:
             prediction = await asyncio.to_thread(
                 self.turn_predictor.predict,
                 vad=self._last_vad,
-                vad_delta=self._last_vad - (getattr(self, "_previous_vad", 0.0)),
+                vad_delta=self._last_vad - self._previous_vad,
                 energy=state.energy,
-                energy_delta=state.energy - (getattr(self, "_previous_energy", 0.0)),
+                energy_delta=state.energy - self._previous_energy,
                 pitch_variation=state.pitch_variation,
                 speech_rate=state.speech_rate,
                 asr_confidence=partial.confidence if partial else 0.0,
@@ -167,13 +164,18 @@ class LiveVoiceConnection:
             )
             self._previous_vad = self._last_vad
             self._previous_energy = state.energy
-            await self.send_event("turn_prediction", end_probability=prediction.end_probability, interrupt_probability=prediction.interrupt_probability, continue_probability=prediction.continue_probability)
+            await self.send_event("turn_prediction", end_probability=prediction.end_probability,
+                                  interrupt_probability=prediction.interrupt_probability,
+                                  continue_probability=prediction.continue_probability)
             if self.tom_speaking and prediction.interrupt_probability >= 0.72:
                 await self.interrupt("learned_turn_interrupt")
 
     async def process_turn(self, pcm: bytes) -> None:
         if len(pcm) < 3200:
             return
+        # A new semantic turn supersedes any old interrupted response.
+        self.pending_tts_text = None
+        self.pending_tts_index = 0
         await self.send_event("state", value="transcribing")
         try:
             self.asr.reset()
@@ -189,35 +191,20 @@ class LiveVoiceConnection:
         state = self.prosody.state
         await self.send_event("transcript", text=text, confidence=final.confidence, language=final.language, final=True)
         await self.send_event("state", value="thinking")
-        response = await self.runtime.handle(
-            AgentRequest(
-                message=text,
-                conversation_id=self.conversation_id,
-                context={
-                    "voice_turn": True,
-                    "asr_confidence": final.confidence,
-                    "user_language": final.language,
-                    "user_pitch_hz": state.mean_pitch_hz,
-                    "user_pitch_variation": state.pitch_variation,
-                    "user_energy": state.energy,
-                    "user_arousal": state.arousal,
-                    "user_valence_hint": state.valence_hint,
-                },
-            )
-        )
+        response = await self.runtime.handle(AgentRequest(
+            message=text,
+            conversation_id=self.conversation_id,
+            context={"voice_turn": True, "asr_confidence": final.confidence,
+                     "user_language": final.language, "user_pitch_hz": state.mean_pitch_hz,
+                     "user_pitch_variation": state.pitch_variation, "user_energy": state.energy,
+                     "user_arousal": state.arousal, "user_valence_hint": state.valence_hint},
+        ))
         await self.send_event("response", text=response.reply, conversation_id=self.conversation_id)
-        self.tts_task = asyncio.create_task(
-            self.speak(
-                response.reply,
-                signals=ConversationSignals(
-                    user_text=text,
-                    user_is_excited=state.arousal >= 0.58,
-                    user_arousal=state.arousal,
-                    user_valence=state.valence_hint,
-                    is_interruption=False,
-                ),
-            )
-        )
+        self.tts_task = asyncio.create_task(self.speak(
+            response.reply,
+            signals=ConversationSignals(user_text=text, user_is_excited=state.arousal >= 0.58,
+                                       user_arousal=state.arousal, user_valence=state.valence_hint),
+        ))
         try:
             await self.tts_task
         except asyncio.CancelledError:
@@ -231,7 +218,9 @@ class LiveVoiceConnection:
         if event_type == "hello":
             self.voice_id = payload.get("voice_id", "tom_m1")
             self.audio_sample_rate = int(payload.get("sample_rate", 16000))
-            await self.send_event("ready", protocol=2, conversation_id=self.conversation_id, sample_rate=24000, continuous_audio=True, neural_vad=self._neural_vad, learned_turn_prediction=self.turn_predictor.configured)
+            await self.send_event("ready", protocol=2, conversation_id=self.conversation_id, sample_rate=24000,
+                                  continuous_audio=True, neural_vad=self._neural_vad,
+                                  learned_turn_prediction=self.turn_predictor.configured)
         elif event_type == "interrupt":
             await self.interrupt(payload.get("reason", "user_barge_in"))
         elif event_type == "audio_start":
@@ -244,7 +233,10 @@ class LiveVoiceConnection:
                 self.turn_task = asyncio.create_task(self.process_turn(bytes(self.turn_audio)))
                 self.turn_audio.clear()
         elif event_type == "resume_audio":
-            await self.send_event("resume", supported=False, reason="TTS is regenerated after semantic interruption")
+            if self.pending_tts_text and self.pending_tts_index < len(re.split(r"(?<=[.!?।])\s+", self.pending_tts_text)):
+                self.tts_task = asyncio.create_task(self.speak(self.pending_tts_text, resume=True))
+            else:
+                await self.send_event("resume", supported=False, reason="no resumable TTS segment")
 
     async def run(self) -> None:
         await self.send_event("connected", protocol=2)
