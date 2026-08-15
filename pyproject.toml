@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tom-agent"
-version = "0.3.0"
+version = "0.4.0"
 description = "Open-source-first personal multimodal AI agent runtime"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,6 +22,12 @@ browser = ["playwright>=1.50,<2"]
 voice = [
   "numpy>=1.26,<3",
   "faster-whisper>=1.2,<2",
+]
+voice-neural = [
+  "numpy>=1.26,<3",
+  "faster-whisper>=1.2,<2",
+  "silero-vad>=6,<7",
+  "onnxruntime>=1.18,<2",
 ]
 dev = ["pytest>=8,<9", "pytest-asyncio>=0.25,<1", "ruff>=0.9,<1"]
 
