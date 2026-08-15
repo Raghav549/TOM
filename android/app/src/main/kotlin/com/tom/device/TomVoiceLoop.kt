@@ -2,6 +2,7 @@ package com.tom.device
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -10,18 +11,24 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
+import android.os.Bundle
 import android.os.Process
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
 
-/** Continuous Android PCM transport for TOM's neural full-duplex voice loop. */
+/** Full-duplex Android PCM transport with a real Android voice fallback when Core is unreachable. */
 class TomVoiceLoop(
     private val context: Context,
     private val endpoint: String,
@@ -33,7 +40,7 @@ class TomVoiceLoop(
     companion object {
         private const val INPUT_RATE = 16_000
         private const val OUTPUT_RATE = 24_000
-        private const val FRAME_SAMPLES = 320 // 20 ms @ 16 kHz
+        private const val FRAME_SAMPLES = 320
         private const val START_RMS = 0.020f
         private const val START_FRAMES = 2
     }
@@ -44,8 +51,11 @@ class TomVoiceLoop(
     private var recorder: AudioRecord? = null
     private var track: AudioTrack? = null
     private var echoCanceler: AcousticEchoCanceler? = null
+    private var tts: TextToSpeech? = null
+    private var recognizer: SpeechRecognizer? = null
     private val running = AtomicBoolean(false)
     private var tomSpeaking = false
+    private var coreFailed = false
 
     fun start() {
         if (running.getAndSet(true)) return
@@ -54,6 +64,7 @@ class TomVoiceLoop(
             onError("Microphone permission is required")
             return
         }
+        initLocalVoice()
         connect()
     }
 
@@ -63,14 +74,40 @@ class TomVoiceLoop(
         socket = null
         stopRecorder()
         stopPlayback()
-        client.dispatcher.executorService.shutdown()
+        recognizer?.cancel()
+        recognizer?.destroy()
+        recognizer = null
+        tts?.stop()
+        tts?.shutdown()
+        tts = null
+        // Do not shut down OkHttp's dispatcher: the same loop instance can be restarted.
+    }
+
+    private fun initLocalVoice() {
+        if (tts == null) {
+            tts = TextToSpeech(context) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    tts?.language = Locale("hi", "IN")
+                    tts?.setSpeechRate(0.96f)
+                }
+            }
+        }
+    }
+
+    private fun say(text: String) {
+        if (!running.get()) return
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "tom-${System.currentTimeMillis()}")
     }
 
     private fun connect() {
         onState("connecting")
-        val request = Request.Builder().url(endpoint).build()
+        val request = runCatching { Request.Builder().url(endpoint).build() }.getOrElse {
+            enterLocalFallback("Invalid voice endpoint")
+            return
+        }
         socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                coreFailed = false
                 webSocket.send(
                     JSONObject()
                         .put("type", "hello")
@@ -81,6 +118,7 @@ class TomVoiceLoop(
                         .toString()
                 )
                 onState("connected")
+                say("TOM connected. Boliye.")
                 startPlayback()
                 startRecorder()
             }
@@ -98,26 +136,112 @@ class TomVoiceLoop(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 tomSpeaking = false
-                onState("disconnected")
-                onError(t.message ?: "voice WebSocket failure")
+                onState("core_unavailable")
+                enterLocalFallback(t.message ?: "TOM Core is unreachable")
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 tomSpeaking = false
-                onState("closed")
+                if (running.get()) onState("closed")
             }
         })
+    }
+
+    private fun enterLocalFallback(reason: String) {
+        if (!running.get() || coreFailed) return
+        coreFailed = true
+        stopRecorder()
+        stopPlayback()
+        onError("TOM Core unavailable: $reason")
+        onState("local_voice")
+        say("TOM Core se connection nahi ho raha. Main local voice mode mein hoon. Aap bol sakte hain.")
+        startLocalRecognizer()
+    }
+
+    private fun startLocalRecognizer() {
+        if (!running.get() || !SpeechRecognizer.isRecognitionAvailable(context)) {
+            onError("Android speech recognition is not available on this device")
+            say("Is phone par speech recognition available nahi hai.")
+            return
+        }
+        if (recognizer == null) {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) { onState("listening") }
+                    override fun onBeginningOfSpeech() { onState("hearing") }
+                    override fun onRmsChanged(rmsdB: Float) = Unit
+                    override fun onBufferReceived(buffer: ByteArray?) = Unit
+                    override fun onEndOfSpeech() { onState("processing") }
+                    override fun onError(error: Int) {
+                        if (running.get() && coreFailed) {
+                            onState("listening")
+                            startLocalRecognizerDelayed()
+                        }
+                    }
+                    override fun onResults(results: Bundle?) {
+                        val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
+                        if (text.isNotEmpty()) {
+                            onTranscript(text)
+                            handleLocalCommand(text)
+                        }
+                        if (running.get() && coreFailed) startLocalRecognizerDelayed()
+                    }
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                        if (text.isNotBlank()) onTranscript(text)
+                    }
+                    override fun onEvent(eventType: Int, params: Bundle?) = Unit
+                })
+            }
+        }
+        startLocalRecognizerDelayed(150L)
+    }
+
+    private fun startLocalRecognizerDelayed(delay: Long = 500L) {
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (!running.get() || !coreFailed) return@postDelayed
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            }
+            runCatching { recognizer?.startListening(intent) }
+                .onFailure { onError("Local speech start failed: ${it.message}") }
+        }, delay)
+    }
+
+    private fun handleLocalCommand(raw: String) {
+        val text = raw.lowercase(Locale.ROOT)
+        when {
+            text.contains("hello") || text.contains("hi") || text.contains("नमस्ते") || text.contains("namaste") ->
+                say("Namaste. Main TOM hoon. Core connection ke bina main abhi basic local mode mein hoon.")
+            text.contains("home") || text.contains("होम") -> {
+                runCatching { TomAccessibilityService.instance().home() }
+                say("Home kar diya.")
+            }
+            text.contains("back") || text.contains("पीछे") -> {
+                runCatching { TomAccessibilityService.instance().back() }
+                say("Back kar diya.")
+            }
+            text.contains("recent") || text.contains("recents") -> {
+                runCatching { TomAccessibilityService.instance().recents() }
+                say("Recent apps khol diye.")
+            }
+            text.contains("stop") || text.contains("बंद") || text.contains("रुको") -> {
+                say("Theek hai.")
+                stop()
+            }
+            else -> say("Maine suna: $raw. Full AI jawab ke liye TOM Core ko reachable WSS endpoint par connect karna hoga.")
+        }
     }
 
     private fun handleEvent(event: JSONObject) {
         when (event.optString("type")) {
             "connected", "ready" -> onState("listening")
             "state" -> onState(event.optString("value", "working"))
-            "partial_transcript" -> onTranscript(event.optString("text"))
-            "transcript" -> onTranscript(event.optString("text"))
-            "prosody" -> {
-                if (event.optBoolean("continuous", false)) onState("listening")
-            }
+            "partial_transcript", "transcript" -> onTranscript(event.optString("text"))
+            "prosody" -> if (event.optBoolean("continuous", false)) onState("listening")
             "turn_prediction" -> Unit
             "audio_start" -> {
                 tomSpeaking = true
@@ -143,19 +267,10 @@ class TomVoiceLoop(
     private fun startRecorder() {
         executor.execute {
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-            val minBuffer = AudioRecord.getMinBufferSize(
-                INPUT_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-            )
+            val minBuffer = AudioRecord.getMinBufferSize(INPUT_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
             val bufferSize = maxOf(minBuffer, FRAME_SAMPLES * 2 * 8)
-            val local = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                INPUT_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                bufferSize,
-            )
+            val local = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, INPUT_RATE,
+                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
             recorder = local
             echoCanceler = AcousticEchoCanceler.create(local.audioSessionId)?.also { it.enabled = true }
             val frame = ShortArray(FRAME_SAMPLES)
@@ -163,29 +278,18 @@ class TomVoiceLoop(
             var localSpeaking = false
             try {
                 local.startRecording()
-                while (running.get()) {
+                while (running.get() && !coreFailed) {
                     val read = local.read(frame, 0, frame.size, AudioRecord.READ_BLOCKING)
                     if (read <= 0) continue
                     val pcm = shortsToBytes(frame, read)
-
-                    // Continuous transport: the server's neural VAD sees every frame,
-                    // including silence, so turn boundaries are model-driven.
                     socket?.send(okio.ByteString.of(*pcm))
-
-                    // Lightweight local barge-in guard keeps interruption latency low
-                    // while the server neural VAD/turn model makes the authoritative decision.
                     val active = rms(frame, read) >= START_RMS
                     if (active) {
                         localSpeechFrames++
                         if (!localSpeaking && localSpeechFrames >= START_FRAMES) {
                             localSpeaking = true
                             if (tomSpeaking) {
-                                socket?.send(
-                                    JSONObject()
-                                        .put("type", "interrupt")
-                                        .put("reason", "android_local_barge_in")
-                                        .toString()
-                                )
+                                socket?.send(JSONObject().put("type", "interrupt").put("reason", "android_local_barge_in").toString())
                                 onState("interrupting")
                             }
                         }
@@ -195,7 +299,7 @@ class TomVoiceLoop(
                     }
                 }
             } catch (t: Throwable) {
-                if (running.get()) onError("Microphone loop failed: ${t.message}")
+                if (running.get() && !coreFailed) onError("Microphone loop failed: ${t.message}")
             } finally {
                 runCatching { local.stop() }
                 local.release()
@@ -213,27 +317,12 @@ class TomVoiceLoop(
 
     private fun ensureTrack() {
         if (track != null) return
-        val min = AudioTrack.getMinBufferSize(
-            OUTPUT_RATE,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-        )
+        val min = AudioTrack.getMinBufferSize(OUTPUT_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         track = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setSampleRate(OUTPUT_RATE)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build()
-            )
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(OUTPUT_RATE).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
             .setBufferSizeInBytes(maxOf(min, 24_000))
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
