@@ -9,6 +9,7 @@ import android.graphics.Rect
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.CalendarContract
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import org.json.JSONArray
@@ -147,7 +148,32 @@ class TomAccessibilityService : AccessibilityService() {
 
     fun openIntentUri(intentUri: String): Boolean {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(intentUri)).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+            )
+        }
+        if (intent.resolveActivity(packageManager) == null) return false
+        startActivity(intent)
+        return true
+    }
+
+    fun openCalendar(): Boolean {
+        val intent = Intent(Intent.ACTION_VIEW, CalendarContract.CONTENT_URI).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        if (intent.resolveActivity(packageManager) == null) return false
+        startActivity(intent)
+        return true
+    }
+
+    fun createCalendarEvent(title: String, startMillis: Long, endMillis: Long, location: String?, description: String?): Boolean {
+        if (endMillis <= startMillis) return false
+        val intent = Intent(Intent.ACTION_INSERT, CalendarContract.Events.CONTENT_URI).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, startMillis)
+            putExtra(CalendarContract.EXTRA_EVENT_END_TIME, endMillis)
+            putExtra(CalendarContract.Events.TITLE, title)
+            location?.let { putExtra(CalendarContract.Events.EVENT_LOCATION, it) }
+            description?.let { putExtra(CalendarContract.Events.DESCRIPTION, it) }
         }
         if (intent.resolveActivity(packageManager) == null) return false
         startActivity(intent)
