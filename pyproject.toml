@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tom-agent"
-version = "0.5.0"
+version = "0.5.1"
 description = "Open-source-first personal multimodal AI agent runtime"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,9 +27,15 @@ voice = [
 voice-indic = [
   "numpy>=1.26,<3",
   "torch>=2.5,<3",
-  "transformers>=4.48,<6",
+  "transformers>=4.57.3,<6",
   "soundfile>=0.13,<1",
   "parler-tts @ git+https://github.com/huggingface/parler-tts.git",
+]
+voice-qwen = [
+  "numpy>=1.26,<3",
+  "qwen-tts==0.1.1",
+  "torch>=2.5,<3",
+  "soundfile>=0.13,<1",
 ]
 voice-neural = [
   "numpy>=1.26,<3",
