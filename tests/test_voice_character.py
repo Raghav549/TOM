@@ -1,5 +1,4 @@
 from tom.voice.director import ConversationSignals, VoiceDirector
-from tom.voice.models import Emotion
 from tom.voice.session import VoiceSession
 from tom.voice.tts_factory import HybridExpressiveTTS
 
@@ -12,7 +11,8 @@ class DummyEngine:
 def test_default_character_is_tom_friendly_sigma():
     signals = ConversationSignals(user_text="hello")
     assert signals.character_name == "TOM"
-    assert signals.character_style == "friendly"
+    assert signals.character_style == "friendly+sigma"
+    assert signals.character_traits == ()
 
 
 def test_character_controls_override_base_delivery():
