@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 from .cosyvoice_stream import TTSChunk
 from .models import Language, VoiceProfile, VoiceStyle
@@ -19,25 +19,18 @@ class Qwen3VoiceConfig:
 
 
 class Qwen3TTSStreamingAdapter:
-    """Qwen3-TTS expressive adapter with low-latency PCM packetization.
-
-    Qwen3-TTS provides controllable voice design, custom voices and cloning. The
-    upstream Python wrapper can return complete waveforms, so this adapter never
-    pretends that post-generation chunking is model-level streaming: it packetizes
-    generated PCM for the live transport. True model-streaming can be enabled later
-    by replacing this adapter without changing the TOM voice contract.
-    """
+    """Qwen3-TTS expressive adapter with low-latency PCM packetization."""
 
     SAMPLE_RATE = 24000
 
-    _LANGUAGE_NAMES = {
+    _LANGUAGE_NAMES: ClassVar[dict[Language, str]] = {
         Language.EN: "English",
         Language.HI: "Hindi",
         Language.HINGLISH: "English",
         Language.BN: "Bengali",
     }
 
-    _SPEAKERS = {
+    _SPEAKERS: ClassVar[dict[str, str]] = {
         "tom_m1": "Ryan",
         "tom_m2": "Aiden",
         "tom_f1": "Serena",
@@ -73,10 +66,6 @@ class Qwen3TTSStreamingAdapter:
         return model
 
     @staticmethod
-    def _language(language: Language) -> str:
-        return Qwen3TTSStreamingAdapter._LANGUAGE_NAMES.get(language, "English")
-
-    @staticmethod
     def _instruction(style: VoiceStyle, *, character: str = "") -> str:
         emotion = style.emotion.value
         rate = "slower" if style.speaking_rate < 0.9 else "faster" if style.speaking_rate > 1.1 else "moderate"
@@ -93,26 +82,19 @@ class Qwen3TTSStreamingAdapter:
     def _generate(self, text: str, language: Language, voice: VoiceProfile, style: VoiceStyle) -> tuple[Any, int]:
         use_design = bool(style.prosody_plan.get("voice_design"))
         model = self._load(design=use_design)
-        language_name = self._language(language)
+        language_name = self._LANGUAGE_NAMES.get(language, "English")
         instruction = self._instruction(style, character=str(style.prosody_plan.get("character", "")))
         if use_design:
             wavs, sr = model.generate_voice_design(
-                text=text,
-                language=language_name,
-                instruct=instruction,
-                do_sample=True,
-                temperature=float(style.prosody_plan.get("temperature", 0.7)),
+                text=text, language=language_name, instruct=instruction,
+                do_sample=True, temperature=float(style.prosody_plan.get("temperature", 0.7)),
                 top_p=float(style.prosody_plan.get("top_p", 0.9)),
             )
         else:
             speaker = self._SPEAKERS.get(voice.id, "Ryan")
             wavs, sr = model.generate_custom_voice(
-                text=text,
-                language=language_name,
-                speaker=speaker,
-                instruct=instruction,
-                do_sample=True,
-                temperature=float(style.prosody_plan.get("temperature", 0.7)),
+                text=text, language=language_name, speaker=speaker, instruct=instruction,
+                do_sample=True, temperature=float(style.prosody_plan.get("temperature", 0.7)),
                 top_p=float(style.prosody_plan.get("top_p", 0.9)),
             )
         return wavs[0], int(sr)
