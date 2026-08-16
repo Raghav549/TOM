@@ -25,6 +25,17 @@ class LiveDeviceLoop:
     _last_plan: Plan | None = field(default=None, init=False)
     _running: bool = field(default=False, init=False)
 
+    def activate(self, plan: Plan | None = None) -> None:
+        """Attach the loop to an already-running AgentRuntime task.
+
+        AgentRuntime owns the initial execution lifecycle, so LiveTaskBridge must
+        not call ``start()`` and create a second plan. Activation makes subsequent
+        Android observations eligible for the closed-loop verification/replan path.
+        """
+        self._running = True
+        if plan is not None:
+            self._last_plan = plan
+
     async def start(self, goal: str, *, memory: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Plan:
         self._running = True
         await self.event_bus.publish("task.started", {"task_id": self.context.task_id, "goal": goal})
