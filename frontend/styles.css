@@ -15,6 +15,14 @@ input { min-width: 0; flex: 1; border: 1px solid #303946; border-radius: 12px; b
 input:focus { border-color: #667487; }
 button { border: 0; border-radius: 12px; padding: 0 18px; background: #eaf2ff; color: #0b0e12; font-weight: 800; cursor: pointer; }
 #taskGoal { margin: 12px 0 0; color: #8e99a8; font-size: 14px; }
+.task-meta { margin-top: 12px; }
+.task-status { display: inline-flex; padding: 6px 10px; border-radius: 999px; background: #1b222b; color: #9eabb9; font-size: 12px; font-weight: 800; }
+.task-status.running { color: #7dffb2; }
+.task-status.terminal { color: #fff; background: #24302a; }
+.commentary { margin: 14px 0 0; padding: 12px 14px; border-radius: 12px; background: #0d1218; color: #d7e1ec; min-height: 42px; }
+.result { margin-top: 10px; padding: 12px 14px; border-radius: 12px; background: #111820; color: #aeb8c5; }
+.result.success { border: 1px solid #28563a; color: #9effc0; }
+.result.failure { border: 1px solid #69343a; color: #ffb3ba; }
 .timeline { display: grid; gap: 10px; margin-top: 18px; }
 .event { padding: 14px 16px; border: 1px solid #252e39; border-radius: 15px; background: #11161d; }
 .event-meta { display: flex; justify-content: space-between; gap: 12px; color: #7f8a99; font-size: 11px; margin-bottom: 8px; }
