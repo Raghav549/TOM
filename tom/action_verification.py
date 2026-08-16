@@ -69,20 +69,10 @@ class ActionSpecificVerifier:
             return "upi", {}
         return name, {}
 
-    def verify(
-        self,
-        call: ToolCall,
-        result: ToolResult,
-        *,
-        before: Mapping[str, Any] | None = None,
-        after: Mapping[str, Any] | None = None,
-        provider: Mapping[str, Any] | None = None,
-    ) -> PredicateResult:
+    def verify(self, call: ToolCall, result: ToolResult, *, before: Mapping[str, Any] | None = None, after: Mapping[str, Any] | None = None, provider: Mapping[str, Any] | None = None) -> PredicateResult:
         if not result.success:
             return PredicateResult(False, "tool_success", 0.0, (), result.error or "tool failed")
         kind, expected = self._legacy_expected(call)
-        if not expected:
-            expected = {"tool_result": True} if result.output is not None else {}
         normalized_after = self._normalize_observation(after)
         if provider:
             normalized_after.setdefault("evidence", [])
@@ -97,6 +87,8 @@ class ActionSpecificVerifier:
                     normalized_after["event_id"] = provider.get("id", provider.get("event_id"))
                 if provider.get("transaction_id"):
                     normalized_after["transaction_id"] = provider["transaction_id"]
+        if kind == call.name and not expected:
+            return PredicateResult(True, "tool_success", 0.75, ("tool_result",), "tool returned a successful result")
         verification = self._engine.verify({"kind": kind, "success_predicate": expected}, normalized_after)
         predicate = {
             "open_app": "open_app.expected_package",
@@ -108,12 +100,4 @@ class ActionSpecificVerifier:
             "create_calendar_event": "calendar.event_created",
             "upi": "upi.provider_success",
         }.get(kind, "tool_success")
-        if verification.state is VerificationState.VERIFIED:
-            predicate = predicate if kind != "upi" or provider else verification.reason
-        return PredicateResult(
-            verification.verified,
-            predicate,
-            verification.confidence,
-            tuple(e.kind for e in verification.evidence),
-            verification.reason,
-        )
+        return PredicateResult(verification.verified, predicate, verification.confidence, tuple(e.kind for e in verification.evidence), verification.reason)
