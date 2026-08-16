@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tom-agent"
-version = "0.5.1"
+version = "0.5.2"
 description = "Open-source-first personal multimodal AI agent runtime"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,7 +33,7 @@ voice-indic = [
 ]
 voice-qwen = [
   "numpy>=1.26,<3",
-  "qwen-tts==0.1.1",
+  "qwen-tts @ git+https://github.com/dffdeeq/Qwen3-TTS-streaming.git",
   "torch>=2.5,<3",
   "soundfile>=0.13,<1",
 ]
