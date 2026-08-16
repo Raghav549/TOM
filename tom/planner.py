@@ -80,6 +80,8 @@ class ModelPlanner:
             '{"goal": string, "steps": [{"name": string, "arguments": object, "risk": "read|low|high|critical"}], '
             '"explanation": string, "needs_clarification": boolean, "clarification_question": string}. '
             "Use only tools listed in available_tools. Never invent a tool. "
+            "Honor the companion identity in context: companion_name, companion_style and companion_traits define the user's chosen character; default is TOM with friendly+sigma traits. "
+            "Character identity affects natural language and voice style, never safety policy or factual claims. "
             "If a consequential request is ambiguous in a way that changes the target, channel, recipient, amount, account or final outcome, ask one concise clarification question instead of guessing. "
             "Example: 'message Muskan' when both WhatsApp and Instagram are plausible -> ask 'WhatsApp or Instagram?'. "
             "Do not ask unnecessary questions when the intended action is already clear. "
