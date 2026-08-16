@@ -46,8 +46,7 @@ class CoreBridgeReceiver:
             image = self.perception.accept_screenshot_chunk(payload)
             if image is None:
                 return None
-            key = self._key(payload)
-            key = self._aliases.get(key, key)
+            key = self._aliases.get(self._key(payload), self._key(payload))
             pending = self.pending.get(key)
             if pending is None and len(self.pending) == 1:
                 # Compatibility fallback for older Android clients with no task/action echo.
@@ -130,6 +129,12 @@ class CoreBridgeReceiver:
         if not pending.image:
             raise ValueError("screenshot required for multimodal decision")
         decision = await self.perception.decide(observation, pending.image, intent)
+        reasons = list(decision.delta.reasons)
+        # A first-ever observation has no before-state. It is useful perception,
+        # but it is not proof that an action succeeded. This prevents a fresh
+        # task from being marked complete merely because a screenshot exists.
+        has_before_state = "initial_observation" not in reasons
+        changed = bool(decision.delta.changed and has_before_state)
         result = {
             "task_id": pending.payload.get("task_id") or None,
             "action_id": pending.payload.get("action_id") or None,
@@ -140,9 +145,9 @@ class CoreBridgeReceiver:
             "state": decision.state.__dict__,
             "delta": decision.delta.__dict__,
             "verification": {
-                "status": "verified" if decision.delta.changed else "failed",
-                "confidence": 1.0 if decision.delta.changed else 0.0,
-                "evidence": list(decision.delta.reasons) or ["post_action_state_unchanged"],
+                "status": "verified" if changed else "unknown",
+                "confidence": 1.0 if changed else 0.0,
+                "evidence": reasons or ["no_verified_state_transition"],
             },
         }
         if self.on_plan:
