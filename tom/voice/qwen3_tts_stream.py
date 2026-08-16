@@ -84,8 +84,6 @@ class Qwen3TTSStreamingAdapter:
         if self.config.attn_implementation:
             kwargs["attn_implementation"] = self.config.attn_implementation
         model = Qwen3TTSModel.from_pretrained(model_id, **kwargs)
-        # Compatible streaming forks expose this optimization hook. It is optional
-        # so TOM remains compatible with the official package as a fallback.
         enable = getattr(model, "enable_streaming_optimizations", None)
         if callable(enable) and self.config.streaming:
             try:
@@ -95,7 +93,6 @@ class Qwen3TTSStreamingAdapter:
                     compile_mode=os.getenv("TOM_QWEN3_TTS_COMPILE_MODE", "reduce-overhead"),
                 )
             except Exception:
-                # Compilation is an optimization, never a correctness dependency.
                 pass
         setattr(self, slot, model)
         return model
@@ -143,10 +140,12 @@ class Qwen3TTSStreamingAdapter:
 
     @staticmethod
     def _to_pcm16_bytes(chunk: Any) -> bytes:
-        import numpy as np
-
         if isinstance(chunk, (bytes, bytearray, memoryview)):
             return bytes(chunk)
+        try:
+            import numpy as np
+        except ImportError as exc:
+            raise RuntimeError("numpy is required for array-based Qwen3-TTS streaming") from exc
         if hasattr(chunk, "detach"):
             chunk = chunk.detach().float().cpu().numpy()
         pcm = np.asarray(chunk)
@@ -181,7 +180,6 @@ class Qwen3TTSStreamingAdapter:
                 first_chunk_frames=self.config.first_chunk_frames,
                 first_chunk_decode_window=min(48, self.config.decode_window_frames),
             )
-
         if use_design:
             fn = getattr(model, "stream_generate_voice_design", None)
             if callable(fn):
@@ -189,7 +187,6 @@ class Qwen3TTSStreamingAdapter:
                     yield TTSChunk(pcm16=self._to_pcm16_bytes(audio), sample_rate=int(sr))
                 return
             return None
-
         speaker = self._SPEAKERS.get(voice.id, "Ryan")
         fn = getattr(model, "stream_generate_custom_voice", None)
         if callable(fn):
@@ -236,9 +233,6 @@ class Qwen3TTSStreamingAdapter:
         if local_stream is not None:
             yield from local_stream
             return
-        # Correctness fallback for the official qwen-tts wrapper. This path is
-        # deliberately packetized only after complete generation; it is not claimed
-        # to be true model-level streaming.
         try:
             import numpy as np
         except ImportError as exc:
