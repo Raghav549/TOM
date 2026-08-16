@@ -48,8 +48,8 @@ class LiveVoiceConnection:
         self.conversation_id = str(uuid4())
         self.voice_id = "tom_m1"
         self.character_name = "TOM"
-        self.character_style = "friendly"
-        self.character_traits: tuple[str, ...] = ()
+        self.character_style = "friendly+sigma"
+        self.character_traits: tuple[str, ...] = ("helpful", "warm", "confident")
         self.character_pitch_shift: float | None = None
         self.character_speaking_rate: float | None = None
         self.character_warmth: float | None = None
@@ -264,8 +264,8 @@ class LiveVoiceConnection:
         if not isinstance(character, dict):
             character = {}
         self.character_name = str(character.get("name") or payload.get("name") or "TOM").strip()[:64] or "TOM"
-        self.character_style = str(character.get("style") or payload.get("style") or "friendly").strip()[:64] or "friendly"
-        traits = character.get("traits") or payload.get("traits") or []
+        self.character_style = str(character.get("style") or payload.get("style") or "friendly+sigma").strip()[:64] or "friendly+sigma"
+        traits = character.get("traits") or payload.get("traits") or ["helpful", "warm", "confident"]
         if isinstance(traits, str):
             traits = [traits]
         self.character_traits = tuple(str(item).strip()[:48] for item in traits if str(item).strip())[:12]
@@ -290,7 +290,8 @@ class LiveVoiceConnection:
                                              "traits": list(self.character_traits)},
                                   voice_capabilities=["emotion", "pitch", "rate", "warmth", "breath_timing",
                                                        "character_style", "voice_design", "barge_in", "resume"],
-                                  default_character={"name": "TOM", "style": "friendly", "traits": ["helpful", "warm"]})
+                                  default_character={"name": "TOM", "style": "friendly+sigma",
+                                                     "traits": ["helpful", "warm", "confident"]})
         elif event_type == "set_character":
             self._apply_character(payload)
             await self.send_event("character_updated", name=self.character_name, style=self.character_style,
