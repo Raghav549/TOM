@@ -16,10 +16,30 @@ class Qwen3VoiceConfig:
     device: str = os.getenv("TOM_QWEN3_TTS_DEVICE", "auto")
     dtype: str = os.getenv("TOM_QWEN3_TTS_DTYPE", "bfloat16")
     chunk_ms: int = int(os.getenv("TOM_QWEN3_TTS_CHUNK_MS", "80"))
+    emit_every_frames: int = int(os.getenv("TOM_QWEN3_TTS_EMIT_FRAMES", "6"))
+    decode_window_frames: int = int(os.getenv("TOM_QWEN3_TTS_DECODE_WINDOW", "72"))
+    first_chunk_emit_every: int = int(os.getenv("TOM_QWEN3_TTS_FIRST_EMIT_FRAMES", "4"))
+    first_chunk_frames: int = int(os.getenv("TOM_QWEN3_TTS_FIRST_CHUNK_FRAMES", "24"))
+    max_frames: int = int(os.getenv("TOM_QWEN3_TTS_MAX_FRAMES", "10000"))
+    overlap_samples: int = int(os.getenv("TOM_QWEN3_TTS_OVERLAP_SAMPLES", "0"))
+    streaming: bool = os.getenv("TOM_QWEN3_TTS_STREAMING", "true").lower() not in {"0", "false", "no"}
+    stream_url: str | None = os.getenv("TOM_QWEN3_TTS_STREAM_URL") or None
+    attn_implementation: str | None = os.getenv("TOM_QWEN3_TTS_ATTN", "flash_attention_2") or None
 
 
 class Qwen3TTSStreamingAdapter:
-    """Qwen3-TTS expressive adapter with low-latency PCM packetization."""
+    """Qwen3-TTS adapter with true token/codec streaming when available.
+
+    The official qwen-tts Python wrapper currently exposes a non-streaming
+    convenience API. TOM therefore supports two real streaming backends:
+
+    1. a compatible local Qwen streaming implementation exposing
+       ``stream_generate_custom_voice`` / ``stream_generate_voice_clone``;
+    2. an OpenAI-compatible Qwen3 streaming server via ``TOM_QWEN3_TTS_STREAM_URL``.
+
+    If neither is available, the adapter falls back to full synthesis and packetizes
+    the result. It never labels that fallback as model-level streaming.
+    """
 
     SAMPLE_RATE = 24000
 
@@ -61,12 +81,27 @@ class Qwen3TTSStreamingAdapter:
         kwargs: dict[str, Any] = {"dtype": dtype}
         if device:
             kwargs["device_map"] = device
+        if self.config.attn_implementation:
+            kwargs["attn_implementation"] = self.config.attn_implementation
         model = Qwen3TTSModel.from_pretrained(model_id, **kwargs)
+        # Compatible streaming forks expose this optimization hook. It is optional
+        # so TOM remains compatible with the official package as a fallback.
+        enable = getattr(model, "enable_streaming_optimizations", None)
+        if callable(enable) and self.config.streaming:
+            try:
+                enable(
+                    decode_window_frames=self.config.decode_window_frames,
+                    use_compile=os.getenv("TOM_QWEN3_TTS_COMPILE", "true").lower() not in {"0", "false", "no"},
+                    compile_mode=os.getenv("TOM_QWEN3_TTS_COMPILE_MODE", "reduce-overhead"),
+                )
+            except Exception:
+                # Compilation is an optimization, never a correctness dependency.
+                pass
         setattr(self, slot, model)
         return model
 
     @staticmethod
-    def _instruction(style: VoiceStyle, *, character: str = "") -> str:
+    def _instruction(style: VoiceStyle, *, character: str = "", traits: str = "") -> str:
         emotion = style.emotion.value
         rate = "slower" if style.speaking_rate < 0.9 else "faster" if style.speaking_rate > 1.1 else "moderate"
         pitch = "lower-pitched" if style.pitch_shift < -0.15 else "higher-pitched" if style.pitch_shift > 0.15 else "natural-pitch"
@@ -74,43 +109,142 @@ class Qwen3TTSStreamingAdapter:
         breath = "with audible natural micro-breath timing" if style.breathiness >= 0.35 else "with natural breath timing"
         warmth = "warm and intimate" if style.warmth >= 0.7 else "clear and conversational"
         character_hint = f" Character identity: {character}." if character else ""
+        trait_hint = f" Character traits: {traits}." if traits else ""
         return (
             f"Speak in a {emotion}, {intensity}, {warmth}, {pitch} conversational style at a {rate} rate, "
-            f"with realistic pauses and {breath}. Avoid theatrical overacting and avoid robotic cadence.{character_hint}"
+            f"with realistic pauses and {breath}. Avoid theatrical overacting and avoid robotic cadence."
+            f"{character_hint}{trait_hint}"
         )
 
     def _generate(self, text: str, language: Language, voice: VoiceProfile, style: VoiceStyle) -> tuple[Any, int]:
         use_design = bool(style.prosody_plan.get("voice_design"))
         model = self._load(design=use_design)
         language_name = self._LANGUAGE_NAMES.get(language, "English")
-        instruction = self._instruction(style, character=str(style.prosody_plan.get("character", "")))
+        instruction = self._instruction(
+            style,
+            character=str(style.prosody_plan.get("character", voice.label)),
+            traits=str(style.prosody_plan.get("character_traits", "")),
+        )
+        kwargs = {
+            "do_sample": True,
+            "temperature": float(style.prosody_plan.get("temperature", 0.7)),
+            "top_p": float(style.prosody_plan.get("top_p", 0.9)),
+        }
         if use_design:
             wavs, sr = model.generate_voice_design(
-                text=text, language=language_name, instruct=instruction,
-                do_sample=True, temperature=float(style.prosody_plan.get("temperature", 0.7)),
-                top_p=float(style.prosody_plan.get("top_p", 0.9)),
+                text=text, language=language_name, instruct=instruction, **kwargs
             )
         else:
             speaker = self._SPEAKERS.get(voice.id, "Ryan")
             wavs, sr = model.generate_custom_voice(
-                text=text, language=language_name, speaker=speaker, instruct=instruction,
-                do_sample=True, temperature=float(style.prosody_plan.get("temperature", 0.7)),
-                top_p=float(style.prosody_plan.get("top_p", 0.9)),
+                text=text, language=language_name, speaker=speaker, instruct=instruction, **kwargs
             )
         return wavs[0], int(sr)
+
+    @staticmethod
+    def _to_pcm16_bytes(chunk: Any) -> bytes:
+        import numpy as np
+
+        if isinstance(chunk, (bytes, bytearray, memoryview)):
+            return bytes(chunk)
+        if hasattr(chunk, "detach"):
+            chunk = chunk.detach().float().cpu().numpy()
+        pcm = np.asarray(chunk)
+        if pcm.dtype.kind == "f":
+            pcm = np.clip(pcm.reshape(-1), -1.0, 1.0)
+            return (pcm * 32767.0).astype(np.int16).tobytes()
+        return pcm.reshape(-1).astype(np.int16, copy=False).tobytes()
+
+    def _stream_local(self, text: str, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk] | None:
+        if not self.config.streaming:
+            return None
+        use_design = bool(style.prosody_plan.get("voice_design"))
+        model = self._load(design=use_design)
+        language_name = self._LANGUAGE_NAMES.get(language, "English")
+        instruction = self._instruction(
+            style,
+            character=str(style.prosody_plan.get("character", voice.label)),
+            traits=str(style.prosody_plan.get("character_traits", "")),
+        )
+        common = {
+            "do_sample": True,
+            "temperature": float(style.prosody_plan.get("temperature", 0.7)),
+            "top_p": float(style.prosody_plan.get("top_p", 0.9)),
+            "emit_every_frames": self.config.emit_every_frames,
+            "decode_window_frames": self.config.decode_window_frames,
+            "overlap_samples": self.config.overlap_samples,
+            "max_frames": self.config.max_frames,
+        }
+        if self.config.first_chunk_emit_every > 0:
+            common.update(
+                first_chunk_emit_every=self.config.first_chunk_emit_every,
+                first_chunk_frames=self.config.first_chunk_frames,
+                first_chunk_decode_window=min(48, self.config.decode_window_frames),
+            )
+
+        if use_design:
+            fn = getattr(model, "stream_generate_voice_design", None)
+            if callable(fn):
+                for audio, sr in fn(text=text, language=language_name, instruct=instruction, **common):
+                    yield TTSChunk(pcm16=self._to_pcm16_bytes(audio), sample_rate=int(sr))
+                return
+            return None
+
+        speaker = self._SPEAKERS.get(voice.id, "Ryan")
+        fn = getattr(model, "stream_generate_custom_voice", None)
+        if callable(fn):
+            for audio, sr in fn(text=text, language=language_name, speaker=speaker, instruct=instruction, **common):
+                yield TTSChunk(pcm16=self._to_pcm16_bytes(audio), sample_rate=int(sr))
+            return
+        return None
+
+    def _stream_http(self, text: str, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk]:
+        try:
+            import httpx
+        except ImportError as exc:
+            raise RuntimeError("httpx is required for TOM_QWEN3_TTS_STREAM_URL") from exc
+        speaker = self._SPEAKERS.get(voice.id, "Ryan")
+        language_name = self._LANGUAGE_NAMES.get(language, "English")
+        instruction = self._instruction(
+            style,
+            character=str(style.prosody_plan.get("character", voice.label)),
+            traits=str(style.prosody_plan.get("character_traits", "")),
+        )
+        payload = {
+            "input": text,
+            "voice": speaker,
+            "model": self.config.model_id,
+            "language": language_name,
+            "instruct": instruction,
+            "stream": True,
+            "response_format": "pcm",
+        }
+        with httpx.stream("POST", self.config.stream_url, json=payload, timeout=None) as response:
+            response.raise_for_status()
+            for data in response.iter_bytes():
+                if data:
+                    yield TTSChunk(pcm16=data, sample_rate=self.SAMPLE_RATE)
 
     def stream(self, text: str, *, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk]:
         prompt = text.strip()
         if not prompt:
             return
+        if self.config.stream_url:
+            yield from self._stream_http(prompt, language, voice, style)
+            return
+        local_stream = self._stream_local(prompt, language, voice, style)
+        if local_stream is not None:
+            yield from local_stream
+            return
+        # Correctness fallback for the official qwen-tts wrapper. This path is
+        # deliberately packetized only after complete generation; it is not claimed
+        # to be true model-level streaming.
         try:
             import numpy as np
         except ImportError as exc:
             raise RuntimeError("numpy is required for Qwen3-TTS") from exc
         waveform, sample_rate = self._generate(prompt, language, voice, style)
-        pcm = np.asarray(waveform, dtype=np.float32).reshape(-1)
-        pcm = np.clip(pcm, -1.0, 1.0)
-        pcm16 = (pcm * 32767.0).astype(np.int16).tobytes()
+        pcm16 = self._to_pcm16_bytes(np.asarray(waveform, dtype=np.float32))
         packet_bytes = max(320, int(sample_rate * self.config.chunk_ms / 1000) * 2)
         for offset in range(0, len(pcm16), packet_bytes):
             yield TTSChunk(pcm16=pcm16[offset:offset + packet_bytes], sample_rate=sample_rate)
