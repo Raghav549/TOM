@@ -100,11 +100,19 @@ class AgentRuntime:
             self._contexts[request.conversation_id] = context
         reply = await self.responder.respond(user_message=request.message, events=events, context=context)
         self.memory.add(request.conversation_id, "assistant", reply, {"events": events, "task": task.public_dict()})
-        terminal_type = "TASK_FAILED" if any(not result.success for result in results) and not pending else "TASK_COMPLETED"
-        terminal_message = reply
-        events.append({"type": terminal_type, "message": terminal_message, "goal": plan.goal})
-        await self.events_bus.publish(terminal_type, {"task_id": request.conversation_id, "message": terminal_message, "goal": plan.goal})
-        await self.events_bus.publish("assistant.reply", {"task_id": request.conversation_id, "reply": reply, "pending": len(pending), "terminal": True})
+
+        # A task awaiting explicit approval is not terminal. The user-facing
+        # stream must stay open so the later approved execution can emit the
+        # real completion/failure result after verification.
+        if pending:
+            terminal_type = "task.waiting_approval"
+            await self.events_bus.publish(terminal_type, {"task_id": request.conversation_id, "message": reply, "pending": len(pending), "terminal": False})
+        else:
+            terminal_type = "TASK_FAILED" if any(not result.success for result in results) else "TASK_COMPLETED"
+            terminal_message = reply
+            events.append({"type": terminal_type, "message": terminal_message, "goal": plan.goal})
+            await self.events_bus.publish(terminal_type, {"task_id": request.conversation_id, "message": terminal_message, "goal": plan.goal})
+            await self.events_bus.publish("assistant.reply", {"task_id": request.conversation_id, "reply": reply, "pending": 0, "terminal": True})
         return AgentResponse(conversation_id=request.conversation_id, reply=reply, plan=plan, pending_approval=pending, results=results, events=events)
 
     async def stream_conversational_response(self, request: AgentRequest) -> AsyncIterator[str]:
@@ -186,13 +194,6 @@ class AgentRuntime:
             state["live"] = live.snapshot()
         return state
 
-    def update_observation(self, conversation_id: str, *, package: str | None = None, url: str | None = None, fingerprint: str | None = None) -> dict[str, Any] | None:
-        live = self._live.get(conversation_id)
-        if live is None:
-            return None
-        live.observe(package=package, url=url, fingerprint=fingerprint)
-        return live.snapshot()
-
     async def approve_and_execute(self, conversation_id: str, tool_index: int) -> dict[str, Any]:
         calls = self._pending.get(conversation_id, [])
         if tool_index < 0 or tool_index >= len(calls):
@@ -238,30 +239,22 @@ class AgentRuntime:
             pre = self.preconditions.check(gated, observed_state=(context or {}).get("screen_state"))
             if not pre.ok:
                 if live:
-                    live.action_finished(False, pre.reason)
-                events.append({"type": "VERIFICATION", "verified": False, "reason": pre.reason})
-                await self.events_bus.publish("action.finished", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": False, "error": pre.reason})
-                return ToolResult(tool=call.name, success=False, error=pre.reason)
-            output = await tool.run(pre.normalized_arguments or arguments)
-            result = ToolResult(tool=call.name, success=True, output=output)
-            verification = self.verifier.verify(result)
-            if not verification.ok:
-                if live:
-                    live.action_finished(False, verification.reason)
-                events.append({"type": "VERIFICATION", "verified": False, "reason": verification.reason})
-                await self.events_bus.publish("action.finished", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": False, "error": verification.reason})
-                return ToolResult(tool=call.name, success=False, error=verification.reason)
+                    live.action_finished(action_id, False)
+                error = pre.reason or "action precondition failed"
+                events.append({"type": "action.failed", "action_id": action_id, "error": error, "step": step})
+                await self.events_bus.publish("action.failed", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "error": error, "step": step})
+                return ToolResult(success=False, output=None, error=error)
+            result = await tool.run(gated.arguments)
             if live:
-                live.action_finished(True)
-            events.append({"type": "OBSERVATION", "action_id": action_id, "summary": "fresh result observed"})
-            events.append({"type": "VERIFICATION", "verified": True, "action_id": action_id})
-            events.append({"type": "tool.completed", "tool": call.name, "verified": True})
-            await self.events_bus.publish("action.finished", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": True, "output": output})
+                live.action_finished(action_id, result.success)
+            event_type = "action.finished" if result.success else "action.failed"
+            events.append({"type": event_type, "action_id": action_id, "output": result.output, "error": result.error, "step": step})
+            await self.events_bus.publish(event_type, {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "output": result.output, "error": result.error, "step": step})
             return result
-        except Exception as exc:  # noqa: BLE001 - tool adapters are untrusted plugin boundaries.
+        except Exception as exc:  # noqa: BLE001 - tool adapters are an external failure boundary
             if live:
-                live.action_finished(False, str(exc))
-            events.append({"type": "VERIFICATION", "verified": False, "reason": str(exc), "action_id": action_id})
-            events.append({"type": "tool.failed", "tool": call.name, "error": str(exc)})
-            await self.events_bus.publish("action.finished", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "success": False, "error": str(exc)})
-            return ToolResult(tool=call.name, success=False, error=str(exc))
+                live.action_finished(action_id, False)
+            error = str(exc)
+            events.append({"type": "action.failed", "action_id": action_id, "error": error, "step": step})
+            await self.events_bus.publish("action.failed", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "error": error, "step": step})
+            return ToolResult(success=False, output=None, error=error)
