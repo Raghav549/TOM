@@ -51,6 +51,29 @@ async def test_observation_updates_live_context_and_replans() -> None:
 
 
 @pytest.mark.asyncio
+async def test_activated_loop_accepts_observations_without_creating_duplicate_plan() -> None:
+    planner = DummyPlanner()
+    bus = AgentEventBus()
+    loop = LiveDeviceLoop(planner, bus, LiveExecutionContext("task-activation", "continue task"))
+
+    loop.activate()
+    await loop.observation(
+        package="com.android.chrome",
+        url="https://example.com",
+        fingerprint="screen-2",
+        source="android_accessibility",
+    )
+
+    assert loop.context.snapshot()["current_app"] == "com.android.chrome"
+    assert loop.context.snapshot()["current_url"] == "https://example.com"
+    assert planner.calls == []
+
+    await loop.replan(goal="continue task", memory=[{"role": "user", "content": "continue"}], tools=[])
+    assert len(planner.calls) == 1
+    assert planner.calls[0][1]["replan_reason"] == "fresh_observation"
+
+
+@pytest.mark.asyncio
 async def test_failed_action_emits_recovery_signal() -> None:
     planner = DummyPlanner()
     bus = AgentEventBus()
