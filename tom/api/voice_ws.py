@@ -12,6 +12,7 @@ from tom.models import AgentRequest
 from tom.runtime import AgentRuntime
 from tom.voice.cosyvoice_stream import TTSChunk
 from tom.voice.director import ConversationSignals
+from tom.voice.live_commentary import LiveVoiceCommentary
 from tom.voice.models import VOICE_PROFILES
 from tom.voice.neural_vad import SileroStreamingVAD
 from tom.voice.prosody_state import ContinuousProsodyTracker
@@ -66,6 +67,7 @@ class LiveVoiceConnection:
         self.pending_tts_text: str | None = None
         self.pending_tts_index = 0
         self.awaiting_endpoint = False
+        self.commentary: LiveVoiceCommentary | None = None
         self._last_vad = 0.0
         self._last_prosody_emit_ms = 0
         self._audio_ms = 0
@@ -80,6 +82,9 @@ class LiveVoiceConnection:
         if self.tts_task and not self.tts_task.done():
             self.tts_task.cancel()
             await asyncio.gather(self.tts_task, return_exceptions=True)
+        if self.commentary and self.commentary.task and not self.commentary.task.done():
+            self.commentary.task.cancel()
+            await asyncio.gather(self.commentary.task, return_exceptions=True)
         self.tts_task = None
         self.tom_speaking = False
         self.turns.update(
@@ -104,6 +109,36 @@ class LiveVoiceConnection:
             character_breathiness=self.character_breathiness,
             character_expressiveness=self.character_expressiveness,
         )
+
+    async def _speak_commentary(self, text: str) -> None:
+        turn = VoiceSession(self.tts).prepare_turn(
+            text,
+            voice_id=self.voice_id,
+            signals=ConversationSignals(
+                user_text="",
+                task_running=True,
+                character_name=self.character_name,
+                character_style=self.character_style,
+                character_traits=self.character_traits,
+                character_pitch_shift=self.character_pitch_shift,
+                character_speaking_rate=self.character_speaking_rate,
+                character_warmth=self.character_warmth,
+                character_breathiness=self.character_breathiness,
+                character_expressiveness=self.character_expressiveness,
+            ),
+        )
+        self.tom_speaking = True
+        try:
+            await self.send_event("voice_state", value="commentary", text=text)
+            iterator = self.tts.stream(text, language=turn.language, voice=VOICE_PROFILES[self.voice_id], style=turn.style)
+            while True:
+                chunk: TTSChunk | None = await asyncio.to_thread(_next_or_none, iterator)
+                if chunk is None:
+                    break
+                await self.websocket.send_bytes(chunk.pcm16)
+                await asyncio.sleep(0)
+        finally:
+            self.tom_speaking = False
 
     async def speak(self, text: str, *, voice_id: str | None = None,
                     signals: ConversationSignals | None = None, resume: bool = False) -> None:
@@ -231,7 +266,17 @@ class LiveVoiceConnection:
         state = self.prosody.state
         await self.send_event("transcript", text=text, confidence=final.confidence, language=final.language, final=True)
         await self.send_event("state", value="thinking")
-        response = await self.runtime.handle(AgentRequest(
+
+        if self.commentary:
+            await self.commentary.stop()
+        self.commentary = LiveVoiceCommentary(
+            self.runtime.events_bus,
+            self.conversation_id,
+            self._speak_commentary,
+            self.send_event,
+        )
+        self.commentary.start()
+        runtime_task = asyncio.create_task(self.runtime.handle(AgentRequest(
             message=text, conversation_id=self.conversation_id,
             context={"voice_turn": True, "asr_confidence": final.confidence,
                      "user_language": final.language, "user_pitch_hz": state.mean_pitch_hz,
@@ -239,7 +284,14 @@ class LiveVoiceConnection:
                      "user_arousal": state.arousal, "user_valence_hint": state.valence_hint,
                      "companion_name": self.character_name, "companion_style": self.character_style,
                      "companion_traits": list(self.character_traits)},
-        ))
+        )))
+        try:
+            response = await runtime_task
+        finally:
+            if self.commentary:
+                await self.commentary.stop()
+                self.commentary = None
+
         await self.send_event("response", text=response.reply, conversation_id=self.conversation_id,
                               character_name=self.character_name)
         self.tts_task = asyncio.create_task(self.speak(
@@ -289,7 +341,8 @@ class LiveVoiceConnection:
                                   character={"name": self.character_name, "style": self.character_style,
                                              "traits": list(self.character_traits)},
                                   voice_capabilities=["emotion", "pitch", "rate", "warmth", "breath_timing",
-                                                       "character_style", "voice_design", "barge_in", "resume"],
+                                                       "character_style", "voice_design", "barge_in", "resume",
+                                                       "live_action_commentary"],
                                   default_character={"name": "TOM", "style": "friendly+sigma",
                                                      "traits": ["helpful", "warm", "confident"]})
         elif event_type == "set_character":
@@ -333,6 +386,9 @@ class LiveVoiceConnection:
         except WebSocketDisconnect:
             return
         finally:
+            if self.commentary:
+                await self.commentary.stop()
+                self.commentary = None
             for task in (self.tts_task, self.turn_task):
                 if task and not task.done():
                     task.cancel()
