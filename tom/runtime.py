@@ -6,6 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from .action_safety import ActionPreconditionChecker
+from .action_verification import ActionSpecificVerifier
 from .agent_events import AgentEventBus
 from .agent_state import StepState, TaskState
 from .approval import ApprovalGate
@@ -28,6 +29,7 @@ class AgentRuntime:
     policy: PermissionPolicy = field(default_factory=PermissionPolicy)
     responder: Responder = field(default_factory=FriendlyFallback)
     verifier: ExecutionVerifier = field(default_factory=ExecutionVerifier)
+    action_verifier: ActionSpecificVerifier = field(default_factory=ActionSpecificVerifier)
     preconditions: ActionPreconditionChecker = field(default_factory=ActionPreconditionChecker)
     events_bus: AgentEventBus = field(default_factory=AgentEventBus)
     _pending: dict[str, list[ToolCall]] = field(default_factory=dict)
@@ -88,12 +90,12 @@ class AgentRuntime:
             else:
                 mode = task.recover_or_advance()
                 events.append({"type": "recovery.decision", "step": index, "mode": mode, "attempts": task.steps[index].attempts})
-                await self.events_bus.publish("recovery.decision", {"task_id": request.conversation_id, "step": index, "mode": mode})
+                await self.events_bus.publish("recovery.decision", {"task_id": request.conversation_id, "step": index, "mode": mode, "attempts": task.steps[index].attempts})
                 if mode == "abort":
                     break
             progress = task.progress()
             events.append({"type": "task.progress", "progress": progress, "step": index})
-            await self.events_bus.publish("task.progress", {"task_id": request.conversation_id, "progress": progress})
+            await self.events_bus.publish("task.progress", {"task_id": request.conversation_id, "progress": progress, "step": index})
 
         if pending:
             self._pending[request.conversation_id] = pending
@@ -101,32 +103,21 @@ class AgentRuntime:
         reply = await self.responder.respond(user_message=request.message, events=events, context=context)
         self.memory.add(request.conversation_id, "assistant", reply, {"events": events, "task": task.public_dict()})
 
-        # A task awaiting explicit approval is not terminal. The user-facing
-        # stream must stay open so the later approved execution can emit the
-        # real completion/failure result after verification.
         if pending:
-            terminal_type = "task.waiting_approval"
-            await self.events_bus.publish(terminal_type, {"task_id": request.conversation_id, "message": reply, "pending": len(pending), "terminal": False})
+            await self.events_bus.publish("task.waiting_approval", {"task_id": request.conversation_id, "message": reply, "pending": len(pending), "terminal": False})
         else:
-            terminal_type = "TASK_FAILED" if any(not result.success for result in results) else "TASK_COMPLETED"
-            terminal_message = reply
-            events.append({"type": terminal_type, "message": terminal_message, "goal": plan.goal})
-            await self.events_bus.publish(terminal_type, {"task_id": request.conversation_id, "message": terminal_message, "goal": plan.goal})
+            completed = bool(results) and all(item.success for item in results) and not any(item.status if hasattr(item, "status") else False for item in results)
+            terminal_type = "TASK_COMPLETED" if completed else "TASK_FAILED"
+            events.append({"type": terminal_type, "message": reply, "goal": plan.goal})
+            await self.events_bus.publish(terminal_type, {"task_id": request.conversation_id, "message": reply, "goal": plan.goal})
             await self.events_bus.publish("assistant.reply", {"task_id": request.conversation_id, "reply": reply, "pending": 0, "terminal": True})
         return AgentResponse(conversation_id=request.conversation_id, reply=reply, plan=plan, pending_approval=pending, results=results, events=events)
 
     async def stream_conversational_response(self, request: AgentRequest) -> AsyncIterator[str]:
-        """Low-latency safe voice response stream.
-
-        Pure conversation bypasses the heavyweight planner entirely. Requests
-        containing likely action/tool intent still go through planning and the
-        verified execution path. Partial ASR is never used to execute a tool.
-        """
         self.memory.add(request.conversation_id, "user", request.message, request.context)
         context = dict(request.context)
         context["memory"] = self.memory.recent(request.conversation_id)
         context["available_tools"] = self.tools.describe()
-
         voice_text = request.message.lower().strip()
         action_hints = (
             "open ", "launch ", "search ", "find ", "look up", "check ", "send ", "message ", "email ",
@@ -136,7 +127,6 @@ class AgentRuntime:
             "schedule", "whatsapp", "instagram", "upi", "location", "weather", "price", "stock",
         )
         fast_chat = bool(request.context.get("voice_turn")) and not any(hint in voice_text for hint in action_hints)
-
         if fast_chat:
             chunks: list[str] = []
             async for token in self.responder.stream(user_message=request.message, events=[], context=context):
@@ -150,7 +140,6 @@ class AgentRuntime:
                 self.memory.add(request.conversation_id, "assistant", reply, {"streamed": True, "voice_fast_path": True})
                 await self.events_bus.publish("assistant.reply", {"task_id": request.conversation_id, "reply": reply, "pending": 0, "terminal": True})
             return
-
         plan = await self.planner.plan(request.message, context)
         if plan.needs_clarification:
             question = plan.clarification_question.strip() or "Which option do you want me to use?"
@@ -158,17 +147,10 @@ class AgentRuntime:
             await self.events_bus.publish("clarification.required", {"task_id": request.conversation_id, "goal": request.message, "question": question})
             yield question
             return
-
         if plan.steps:
-            response = await self.handle(AgentRequest(
-                message=request.message,
-                conversation_id=request.conversation_id,
-                context={**request.context, "_skip_user_memory": True, "_precomputed_plan": plan},
-                dry_run=request.dry_run,
-            ))
+            response = await self.handle(AgentRequest(message=request.message, conversation_id=request.conversation_id, context={**request.context, "_skip_user_memory": True, "_precomputed_plan": plan}, dry_run=request.dry_run))
             yield response.reply
             return
-
         chunks: list[str] = []
         async for token in self.responder.stream(user_message=request.message, events=[], context=context):
             if not token:
@@ -199,7 +181,7 @@ class AgentRuntime:
         if tool_index < 0 or tool_index >= len(calls):
             raise IndexError("invalid pending tool index")
         call = calls[tool_index]
-        self.approvals.approve(call)
+        token = self.approvals.approve(call)
         if not self.approvals.consume(call):
             raise RuntimeError("approval token could not be consumed")
         if self.policy.decide(call, approved=True) is not Decision.ALLOW:
@@ -207,14 +189,20 @@ class AgentRuntime:
         events: list[dict[str, Any]] = []
         context = dict(self._contexts.get(conversation_id, {}))
         context["approved"] = True
-        result = await self._execute(call, events, context=context, conversation_id=conversation_id)
+        result = await self._execute(call, events, context=context, conversation_id=conversation_id, approval_token=token.token)
         del calls[tool_index]
         if not calls:
             self._pending.pop(conversation_id, None)
             self._contexts.pop(conversation_id, None)
         reply = await self.responder.respond(user_message="approved action", events=events, context=context)
         self.memory.add(conversation_id, "assistant", reply, {"events": events, "result": result.model_dump()})
-        await self.events_bus.publish("assistant.reply", {"task_id": conversation_id, "reply": reply, "pending": len(calls)})
+        terminal = not calls
+        await self.events_bus.publish("assistant.reply", {"task_id": conversation_id, "reply": reply, "pending": len(calls), "terminal": terminal})
+        if terminal:
+            verification_ok = result.success
+            terminal_type = "TASK_COMPLETED" if verification_ok else "TASK_FAILED"
+            events.append({"type": terminal_type, "message": reply})
+            await self.events_bus.publish(terminal_type, {"task_id": conversation_id, "message": reply, "verified": verification_ok})
         return {"tool": call.name, "result": result.model_dump(), "reply": reply, "events": events}
 
     async def _execute(self, call: ToolCall, events: list[dict[str, Any]], *, context: dict[str, Any] | None = None, conversation_id: str | None = None, approval_token: str | None = None, step: int = 0) -> ToolResult:
@@ -243,13 +231,45 @@ class AgentRuntime:
                 error = pre.reason or "action precondition failed"
                 events.append({"type": "action.failed", "action_id": action_id, "error": error, "step": step})
                 await self.events_bus.publish("action.failed", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "error": error, "step": step})
-                return ToolResult(success=False, output=None, error=error)
+                return ToolResult(tool=call.name, success=False, output=None, error=error)
+            before_state = dict((context or {}).get("screen_state") or {})
             result = await tool.run(gated.arguments)
+            provider_evidence = result.output if isinstance(result.output, dict) else {}
+            after_state = dict((context or {}).get("screen_state_after") or {})
+            if call.name.startswith("device_") and not after_state:
+                after_state = dict((context or {}).get("screen_state") or {})
+            predicate = self.action_verifier.verify(gated, result, before=before_state, after=after_state, provider=provider_evidence)
+            events.append({
+                "type": "VERIFICATION",
+                "action_id": action_id,
+                "tool": call.name,
+                "verified": predicate.ok,
+                "predicate": predicate.predicate,
+                "confidence": predicate.confidence,
+                "evidence": list(predicate.evidence),
+                "reason": predicate.reason,
+            })
+            await self.events_bus.publish("VERIFICATION", {
+                "task_id": conversation_id,
+                "action_id": action_id,
+                "tool": call.name,
+                "verified": predicate.ok,
+                "predicate": predicate.predicate,
+                "confidence": predicate.confidence,
+                "evidence": list(predicate.evidence),
+                "reason": predicate.reason,
+            })
+            if not predicate.ok:
+                if live:
+                    live.action_finished(action_id, False)
+                error = f"verification failed: {predicate.reason}"
+                events.append({"type": "action.failed", "action_id": action_id, "error": error, "step": step})
+                await self.events_bus.publish("action.failed", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "error": error, "step": step})
+                return ToolResult(tool=call.name, success=False, output=result.output, error=error)
             if live:
-                live.action_finished(action_id, result.success)
-            event_type = "action.finished" if result.success else "action.failed"
-            events.append({"type": event_type, "action_id": action_id, "output": result.output, "error": result.error, "step": step})
-            await self.events_bus.publish(event_type, {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "output": result.output, "error": result.error, "step": step})
+                live.action_finished(action_id, True)
+            events.append({"type": "action.finished", "action_id": action_id, "output": result.output, "verified": True, "step": step})
+            await self.events_bus.publish("action.finished", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "output": result.output, "verified": True, "step": step})
             return result
         except Exception as exc:  # noqa: BLE001 - tool adapters are an external failure boundary
             if live:
@@ -257,4 +277,4 @@ class AgentRuntime:
             error = str(exc)
             events.append({"type": "action.failed", "action_id": action_id, "error": error, "step": step})
             await self.events_bus.publish("action.failed", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "error": error, "step": step})
-            return ToolResult(success=False, output=None, error=error)
+            return ToolResult(tool=call.name, success=False, output=None, error=error)
