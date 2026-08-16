@@ -1,10 +1,9 @@
 import asyncio
 
+from tom.api.voice_ws import LiveVoiceConnection
 from tom.models import AgentRequest
 from tom.response import ModelResponder
 from tom.runtime import AgentRuntime
-from tom.voice.models import VOICE_PROFILES
-from tom.api.voice_ws import LiveVoiceConnection
 
 
 class FakeLLM:
