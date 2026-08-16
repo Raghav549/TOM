@@ -6,6 +6,8 @@ import hashlib
 import json
 
 from .tool_registry import ToolRegistry
+from .success_predicates import SuccessPredicateEngine, VerificationState
+from .verification_policy import VerificationPolicy
 
 
 class Planner(Protocol):
@@ -25,14 +27,17 @@ class LoopEvent:
 
 @dataclass
 class AgentLoop:
-    """ReAct-style observe -> act -> verify loop without exposing private reasoning traces."""
+    """Observe -> act -> action-specific verify -> recover/continue loop."""
 
     planner: Planner
     observer: Observer
     tools: ToolRegistry
     max_steps: int = 40
     max_same_action: int = 2
+    max_verification_polls: int = 20
     on_event: Callable[[LoopEvent], Awaitable[None]] | None = None
+    verifier: SuccessPredicateEngine = field(default_factory=SuccessPredicateEngine)
+    verification_policy: VerificationPolicy = field(default_factory=VerificationPolicy)
 
     async def _emit(self, event: LoopEvent) -> None:
         if self.on_event:
@@ -42,6 +47,47 @@ class AgentLoop:
     def _fingerprint(state: Mapping[str, Any]) -> str:
         safe = json.dumps(state, sort_keys=True, default=str, separators=(",", ":"))
         return hashlib.sha256(safe.encode()).hexdigest()[:20]
+
+    @staticmethod
+    def _has_authoritative_evidence(observation: Mapping[str, Any]) -> bool:
+        raw = observation.get("evidence")
+        if not isinstance(raw, list):
+            return False
+        return any(bool(item.get("authoritative")) and float(item.get("confidence", 0)) >= 0.90 for item in raw if isinstance(item, Mapping))
+
+    async def _verify_action(self, action: Mapping[str, Any], post_state: Mapping[str, Any]) -> Any:
+        kind = str(action.get("kind", action.get("tool", "generic")))
+        risk = str(action.get("risk", "reversible"))
+        requirements = self.verification_policy.requirements(kind, risk)
+        last_result = None
+        for poll in range(self.max_verification_polls):
+            last_result = self.verifier.verify(action, post_state)
+            authoritative = self._has_authoritative_evidence(post_state)
+            accepted = self.verification_policy.accept(
+                last_result.state.value,
+                last_result.confidence,
+                requirements=requirements,
+                authoritative=authoritative,
+            )
+            await self._emit(
+                LoopEvent(
+                    "verification_check",
+                    "I am checking the action's expected postcondition.",
+                    {
+                        "tool": kind,
+                        "poll": poll + 1,
+                        "state": last_result.state.value,
+                        "confidence": last_result.confidence,
+                        "accepted": accepted,
+                    },
+                )
+            )
+            if accepted:
+                return last_result
+            if last_result.state is VerificationState.FAILED:
+                return last_result
+            post_state = await self.observer.observe()
+        return last_result
 
     async def run(self, goal: str) -> Mapping[str, Any]:
         if not goal.strip():
@@ -57,8 +103,7 @@ class AgentLoop:
             await self._emit(LoopEvent("observed", "I checked the current screen/device state.", {"step": step}))
 
             if state_fp == previous_state_fp and step > 1:
-                # The planner can still act, but repeated no-change loops are bounded.
-                await self._emit(LoopEvent("stable_state", "The screen has not changed; I am checking for a safer next step.", {"step": step}))
+                await self._emit(LoopEvent("stable_state", "The screen has not changed; I am checking for a grounded next step.", {"step": step}))
             previous_state_fp = state_fp
 
             action = await self.planner.next_action(goal, state, history)
@@ -87,8 +132,28 @@ class AgentLoop:
                 continue
 
             post_state = await self.observer.observe()
-            history[-1] = {**history[-1], "post_state": post_state}
-            await self._emit(LoopEvent("verified", "I checked what changed after the action.", {"tool": tool_name, "step": step}))
+            verification = await self._verify_action(action, post_state)
+            history[-1] = {
+                **history[-1],
+                "post_state": verification.observed if verification else post_state,
+                "verification": {
+                    "state": verification.state.value if verification else VerificationState.UNKNOWN.value,
+                    "reason": verification.reason if verification else "verification unavailable",
+                    "confidence": verification.confidence if verification else 0.0,
+                },
+            }
+
+            if verification is None or verification.state is not VerificationState.VERIFIED:
+                await self._emit(
+                    LoopEvent(
+                        "verification_failed",
+                        "The action ran, but its expected outcome was not confirmed, so I will not assume success.",
+                        {"tool": tool_name, "step": step, "state": verification.state.value if verification else "unknown"},
+                    )
+                )
+                continue
+
+            await self._emit(LoopEvent("verified", "The expected postcondition is confirmed.", {"tool": tool_name, "step": step}))
 
             if bool(action.get("done", False)):
                 return {"status": "completed", "step": step, "history": history}
