@@ -25,10 +25,12 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
 
-/** Full-duplex Android PCM transport with a real Android voice fallback when Core is unreachable. */
+/** Full-duplex Android PCM transport with bounded low-latency playback jitter buffering. */
 class TomVoiceLoop(
     private val context: Context,
     private val endpoint: String,
@@ -43,10 +45,13 @@ class TomVoiceLoop(
         private const val FRAME_SAMPLES = 320
         private const val START_RMS = 0.020f
         private const val START_FRAMES = 2
+        private const val PLAYBACK_QUEUE_CAPACITY = 10
     }
 
     private val client = OkHttpClient.Builder().build()
     private val executor = Executors.newCachedThreadPool()
+    private val playbackExecutor = Executors.newSingleThreadExecutor()
+    private val playbackQueue = LinkedBlockingQueue<ByteArray>(PLAYBACK_QUEUE_CAPACITY)
     private var socket: WebSocket? = null
     private var recorder: AudioRecord? = null
     private var track: AudioTrack? = null
@@ -65,6 +70,7 @@ class TomVoiceLoop(
             return
         }
         initLocalVoice()
+        startPlaybackWorker()
         connect()
     }
 
@@ -80,7 +86,7 @@ class TomVoiceLoop(
         tts?.stop()
         tts?.shutdown()
         tts = null
-        // Do not shut down OkHttp's dispatcher: the same loop instance can be restarted.
+        playbackQueue.clear()
     }
 
     private fun initLocalVoice() {
@@ -111,10 +117,11 @@ class TomVoiceLoop(
                 webSocket.send(
                     JSONObject()
                         .put("type", "hello")
-                        .put("protocol", 2)
+                        .put("protocol", 4)
                         .put("voice_id", voiceId)
                         .put("sample_rate", INPUT_RATE)
                         .put("continuous_audio", true)
+                        .put("full_duplex", true)
                         .toString()
                 )
                 onState("connected")
@@ -130,12 +137,19 @@ class TomVoiceLoop(
 
             override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
                 if (!running.get()) return
-                ensureTrack()
-                track?.write(bytes.toByteArray(), 0, bytes.size)
+                val pcm = bytes.toByteArray()
+                // Never block the OkHttp callback thread on AudioTrack. Keep only
+                // a small amount of audio buffered to hide network jitter without
+                // adding a large conversational delay.
+                if (!playbackQueue.offer(pcm)) {
+                    playbackQueue.poll()
+                    playbackQueue.offer(pcm)
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 tomSpeaking = false
+                playbackQueue.clear()
                 onState("core_unavailable")
                 enterLocalFallback(t.message ?: "TOM Core is unreachable")
             }
@@ -241,8 +255,8 @@ class TomVoiceLoop(
             "connected", "ready" -> onState("listening")
             "state" -> onState(event.optString("value", "working"))
             "partial_transcript", "transcript" -> onTranscript(event.optString("text"))
-            "prosody" -> if (event.optBoolean("continuous", false)) onState("listening")
-            "turn_prediction" -> Unit
+            "response_partial" -> onState("speaking")
+            "prosody", "turn_prediction", "latency", "smart_turn" -> Unit
             "audio_start" -> {
                 tomSpeaking = true
                 ensureTrack()
@@ -251,6 +265,7 @@ class TomVoiceLoop(
             }
             "audio_stop" -> {
                 tomSpeaking = false
+                playbackQueue.clear()
                 track?.pause()
                 track?.flush()
                 onState("listening")
@@ -315,6 +330,24 @@ class TomVoiceLoop(
         track?.play()
     }
 
+    private fun startPlaybackWorker() {
+        playbackExecutor.execute {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+            while (running.get()) {
+                val pcm = try {
+                    playbackQueue.poll(250, TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                    break
+                } ?: continue
+                if (!running.get()) break
+                ensureTrack()
+                val localTrack = track ?: continue
+                runCatching { localTrack.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING) }
+                    .onFailure { if (running.get()) onError("Audio playback failed: ${it.message}") }
+            }
+        }
+    }
+
     private fun ensureTrack() {
         if (track != null) return
         val min = AudioTrack.getMinBufferSize(OUTPUT_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -336,12 +369,14 @@ class TomVoiceLoop(
     }
 
     private fun stopPlayback() {
+        playbackQueue.clear()
         track?.let { runCatching { it.pause() }; runCatching { it.flush() }; runCatching { it.release() } }
         track = null
         tomSpeaking = false
     }
 
     private fun rms(buffer: ShortArray, count: Int): Float {
+        if (count <= 0) return 0f
         var sum = 0.0
         for (i in 0 until count) {
             val value = buffer[i] / 32768.0
