@@ -36,11 +36,15 @@ class AgentRuntime:
     _live: dict[str, LiveExecutionContext] = field(default_factory=dict)
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
-        self.memory.add(request.conversation_id, "user", request.message, request.context)
-        context = dict(request.context)
+        request_context = dict(request.context)
+        skip_user_memory = bool(request_context.pop("_skip_user_memory", False))
+        precomputed_plan = request_context.pop("_precomputed_plan", None)
+        if not skip_user_memory:
+            self.memory.add(request.conversation_id, "user", request.message, request_context)
+        context = request_context
         context["memory"] = self.memory.recent(request.conversation_id)
         context["available_tools"] = self.tools.describe()
-        plan = await self.planner.plan(request.message, context)
+        plan = precomputed_plan if precomputed_plan is not None else await self.planner.plan(request.message, context)
 
         if plan.needs_clarification:
             question = plan.clarification_question.strip() or "Which option do you want me to use?"
@@ -104,23 +108,46 @@ class AgentRuntime:
         return AgentResponse(conversation_id=request.conversation_id, reply=reply, plan=plan, pending_approval=pending, results=results, events=events)
 
     async def stream_conversational_response(self, request: AgentRequest) -> AsyncIterator[str]:
-        """Stream safe, no-tool conversational replies token-by-token.
+        """Low-latency safe voice response stream.
 
-        Tool-bearing turns stay on the normal verified execution path. This
-        prevents speculative voice tokens from ever triggering an action.
+        Pure conversation bypasses the heavyweight planner entirely. Requests
+        containing likely action/tool intent still go through planning and the
+        verified execution path. Partial ASR is never used to execute a tool.
         """
         self.memory.add(request.conversation_id, "user", request.message, request.context)
         context = dict(request.context)
         context["memory"] = self.memory.recent(request.conversation_id)
         context["available_tools"] = self.tools.describe()
-        plan = await self.planner.plan(request.message, context)
 
+        voice_text = request.message.lower().strip()
+        action_hints = (
+            "open ", "launch ", "search ", "find ", "look up", "check ", "send ", "message ", "email ",
+            "call ", "buy ", "purchase ", "order ", "pay ", "payment", "book ", "navigate ", "map ",
+            "play ", "pause ", "download ", "install ", "delete ", "remove ", "set ", "turn on", "turn off",
+            "remind me", "screenshot", "tap ", "click ", "scroll ", "go back", "website", "calendar",
+            "schedule", "whatsapp", "instagram", "upi", "location", "weather", "price", "stock",
+        )
+        fast_chat = bool(request.context.get("voice_turn")) and not any(hint in voice_text for hint in action_hints)
+
+        if fast_chat:
+            chunks: list[str] = []
+            async for token in self.responder.stream(user_message=request.message, events=[], context=context):
+                if not token:
+                    continue
+                chunks.append(token)
+                await self.events_bus.publish("assistant.partial", {"task_id": request.conversation_id, "text": token})
+                yield token
+            reply = "".join(chunks).strip()
+            if reply:
+                self.memory.add(request.conversation_id, "assistant", reply, {"streamed": True, "voice_fast_path": True})
+                await self.events_bus.publish("assistant.reply", {"task_id": request.conversation_id, "reply": reply, "pending": 0, "terminal": True})
+            return
+
+        plan = await self.planner.plan(request.message, context)
         if plan.needs_clarification:
             question = plan.clarification_question.strip() or "Which option do you want me to use?"
             self.memory.add(request.conversation_id, "assistant", question, {"clarification": True})
-            await self.events_bus.publish("clarification.required", {
-                "task_id": request.conversation_id, "goal": request.message, "question": question,
-            })
+            await self.events_bus.publish("clarification.required", {"task_id": request.conversation_id, "goal": request.message, "question": question})
             yield question
             return
 
@@ -128,29 +155,23 @@ class AgentRuntime:
             response = await self.handle(AgentRequest(
                 message=request.message,
                 conversation_id=request.conversation_id,
-                context=request.context,
+                context={**request.context, "_skip_user_memory": True, "_precomputed_plan": plan},
                 dry_run=request.dry_run,
             ))
             yield response.reply
             return
 
         chunks: list[str] = []
-        events: list[dict[str, Any]] = []
-        async for token in self.responder.stream(user_message=request.message, events=events, context=context):
+        async for token in self.responder.stream(user_message=request.message, events=[], context=context):
             if not token:
                 continue
             chunks.append(token)
-            await self.events_bus.publish("assistant.partial", {
-                "task_id": request.conversation_id, "text": token,
-            })
+            await self.events_bus.publish("assistant.partial", {"task_id": request.conversation_id, "text": token})
             yield token
-
         reply = "".join(chunks).strip()
         if reply:
             self.memory.add(request.conversation_id, "assistant", reply, {"streamed": True})
-            await self.events_bus.publish("assistant.reply", {
-                "task_id": request.conversation_id, "reply": reply, "pending": 0, "terminal": True,
-            })
+            await self.events_bus.publish("assistant.reply", {"task_id": request.conversation_id, "reply": reply, "pending": 0, "terminal": True})
 
     def pending(self, conversation_id: str) -> list[ToolCall]:
         return list(self._pending.get(conversation_id, []))
