@@ -22,7 +22,7 @@ class ConversationSignals:
     user_is_sad: bool = False
     user_is_excited: bool = False
     character_name: str = "TOM"
-    character_style: str = "friendly"
+    character_style: str = "friendly+sigma"
     character_traits: tuple[str, ...] = ()
     character_pitch_shift: float | None = None
     character_speaking_rate: float | None = None
@@ -81,7 +81,6 @@ class VoiceDirector:
             style = VoiceStyle(emotion=Emotion.WARM, intensity=0.4, speaking_rate=1.0, warmth=0.65,
                                style_reason="default companion delivery")
 
-        # Character settings are a controlled layer over the situation-aware director.
         style = style.model_copy(update={
             "pitch_shift": signals.character_pitch_shift if signals.character_pitch_shift is not None else style.pitch_shift,
             "speaking_rate": signals.character_speaking_rate if signals.character_speaking_rate is not None else style.speaking_rate,
