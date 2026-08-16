@@ -22,7 +22,10 @@
         <input id="taskId" placeholder="conversation / task id" autocomplete="off" />
         <button id="connect">Connect</button>
       </div>
+      <div class="task-meta"><span id="taskStatus" class="task-status running">Idle</span></div>
       <p id="taskGoal">Waiting for Core task events…</p>
+      <p id="commentary" class="commentary" aria-live="polite">TOM is waiting.</p>
+      <div id="result" class="result">No task result yet.</div>
     </section>
 
     <section class="timeline" id="timeline" aria-live="polite"></section>
