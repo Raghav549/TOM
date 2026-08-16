@@ -18,7 +18,7 @@ class VoiceTurn:
 
 
 class VoiceSession:
-    """Coordinates language, emotion, expressive prosody and synthesis."""
+    """Coordinates language, emotion, character identity, expressive prosody and synthesis."""
 
     def __init__(self, engine: SpeechEngine, director: VoiceDirector | None = None, planner: ExpressiveSpeechPlanner | None = None) -> None:
         self.engine = engine
@@ -28,14 +28,28 @@ class VoiceSession:
     def prepare_turn(self, text: str, *, voice_id: str = "tom_m1", signals: ConversationSignals | None = None) -> VoiceTurn:
         if voice_id not in VOICE_PROFILES:
             raise ValueError(f"Unknown TOM voice profile: {voice_id}")
+        signals = signals or ConversationSignals(user_text=text)
         language = self.director.detect_language(text)
-        style = self.director.direct(signals or ConversationSignals(user_text=text))
-        plan = self.planner.plan(text, emotion=style.emotion.value, intensity=style.intensity,
-                                 speaking_rate=style.speaking_rate, warmth=style.warmth)
+        style = self.director.direct(signals)
+        plan = self.planner.plan(
+            text,
+            emotion=style.emotion.value,
+            intensity=style.intensity,
+            speaking_rate=style.speaking_rate,
+            warmth=style.warmth,
+        )
         style = style.model_copy(update={"prosody_plan": {
-            "cues": [cue.__dict__ for cue in plan.cues], "pitch_curve": list(plan.pitch_curve),
-            "energy_curve": list(plan.energy_curve), "rate_curve": list(plan.rate_curve),
+            "cues": [cue.__dict__ for cue in plan.cues],
+            "pitch_curve": list(plan.pitch_curve),
+            "energy_curve": list(plan.energy_curve),
+            "rate_curve": list(plan.rate_curve),
             "rationale": list(plan.rationale),
+            "character": signals.character_name,
+            "character_style": signals.character_style,
+            "character_traits": list(signals.character_traits),
+            "voice_design": signals.character_style not in {"friendly", "sigma", "default"} or bool(signals.character_traits),
+            "temperature": 0.62 if style.intensity < 0.65 else 0.72,
+            "top_p": 0.90,
         }})
         return VoiceTurn(text=text, language=language, voice_id=voice_id, style=style)
 
