@@ -37,24 +37,26 @@ class LiveEvent:
     ts: float
 
     def as_dict(self) -> dict[str, Any]:
-        return {
-            "seq": self.seq,
-            "type": self.type,
-            "task_id": self.task_id,
-            "payload": self.payload,
-            "ts": self.ts,
-        }
+        return {"seq": self.seq, "type": self.type, "task_id": self.task_id, "payload": self.payload, "ts": self.ts}
 
 
 class LiveEventStream:
     """Single ordered source shared by Core, Android bridge, UI and voice."""
 
-    def __init__(self, history_size: int = 512) -> None:
+    _default: "LiveEventStream | None" = None
+
+    def __init__(self, history_size: int = 512, *, make_default: bool = True) -> None:
         self.history_size = history_size
         self._seq = 0
         self._history: list[LiveEvent] = []
         self._subscribers: set[asyncio.Queue[LiveEvent]] = set()
         self._lock = asyncio.Lock()
+        if make_default:
+            LiveEventStream._default = self
+
+    @classmethod
+    def default(cls) -> "LiveEventStream | None":
+        return cls._default
 
     async def publish(self, event_type: str, payload: dict[str, Any] | None = None, *, task_id: str | None = None) -> LiveEvent:
         data = dict(payload or {})
