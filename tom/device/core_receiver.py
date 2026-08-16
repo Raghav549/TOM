@@ -5,6 +5,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from tom.action_verification import ActionSpecificVerifier
+from tom.models import ToolCall, ToolResult
 from tom.perception.pipeline import MultimodalRuntime
 
 
@@ -15,19 +17,23 @@ class PendingObservation:
 
 
 class CoreBridgeReceiver:
-    """Reconstruct Android screenshots and bind multimodal decisions to task/action IDs."""
+    """Reconstruct Android screenshots and bind multimodal evidence to predicates."""
 
     def __init__(
         self,
         perception: MultimodalRuntime,
         on_plan: Callable[[dict, object], Awaitable[None]] | None = None,
         on_result: Callable[[dict], Awaitable[None]] | None = None,
+        verifier: ActionSpecificVerifier | None = None,
     ) -> None:
         self.perception = perception
         self.on_plan = on_plan
         self.on_result = on_result
+        self.verifier = verifier or ActionSpecificVerifier()
         self.pending: dict[str, PendingObservation] = {}
         self._aliases: dict[str, str] = {}
+        self._before: dict[str, dict[str, Any]] = {}
+        self._actions: dict[str, ToolCall] = {}
 
     @staticmethod
     def _key(payload: dict[str, Any]) -> str:
@@ -36,6 +42,14 @@ class CoreBridgeReceiver:
         if task_id and action_id:
             return f"{task_id}:{action_id}"
         return str(payload.get("observation_id") or payload.get("request_id") or payload.get("transfer_id") or "")
+
+    def register_action(self, call: ToolCall, *, before_state: dict[str, Any] | None = None) -> None:
+        action_id = str(call.arguments.get("action_id") or call.arguments.get("_action_id") or "").strip()
+        if not action_id:
+            return
+        self._actions[action_id] = call
+        if before_state is not None:
+            self._before[action_id] = dict(before_state)
 
     async def receive(self, message: str) -> dict | None:
         envelope = json.loads(message)
@@ -46,10 +60,10 @@ class CoreBridgeReceiver:
             image = self.perception.accept_screenshot_chunk(payload)
             if image is None:
                 return None
-            key = self._aliases.get(self._key(payload), self._key(payload))
+            source_key = self._key(payload)
+            key = self._aliases.get(source_key, source_key)
             pending = self.pending.get(key)
             if pending is None and len(self.pending) == 1:
-                # Compatibility fallback for older Android clients with no task/action echo.
                 key, pending = next(iter(self.pending.items()))
             if pending is None:
                 return None
@@ -95,6 +109,7 @@ class CoreBridgeReceiver:
                 "task_id": str(payload.get("task_id") or ""),
                 "action_id": str(payload.get("action_id") or ""),
                 "observation_id": observation_id,
+                "snapshot": snapshot,
             })
             self._aliases[observation_id] = key
             request_id = str(payload.get("request_id") or "")
@@ -129,26 +144,39 @@ class CoreBridgeReceiver:
         if not pending.image:
             raise ValueError("screenshot required for multimodal decision")
         decision = await self.perception.decide(observation, pending.image, intent)
-        reasons = list(decision.delta.reasons)
-        # A first-ever observation has no before-state. It is useful perception,
-        # but it is not proof that an action succeeded. This prevents a fresh
-        # task from being marked complete merely because a screenshot exists.
-        has_before_state = "initial_observation" not in reasons
-        changed = bool(decision.delta.changed and has_before_state)
+        action_id = str(pending.payload.get("action_id") or "")
+        call = self._actions.get(action_id)
+        after_state = dict(pending.payload.get("snapshot") or {})
+        before_state = dict(self._before.get(action_id) or {})
+        if call is None:
+            # No registered action means this is perception-only; do not pretend it proves success.
+            verification = {
+                "status": "observed",
+                "confidence": 0.0,
+                "predicate": "observation_only",
+                "evidence": list(decision.delta.reasons),
+                "reason": "no action is bound to this observation",
+            }
+        else:
+            result = ToolResult(tool=call.name, success=True, output={"observation_received": True})
+            verdict = self.verifier.verify(call, result, before=before_state, after=after_state, provider={})
+            verification = {
+                "status": "verified" if verdict.ok else "failed",
+                "confidence": verdict.confidence,
+                "predicate": verdict.predicate,
+                "evidence": list(verdict.evidence),
+                "reason": verdict.reason,
+            }
         result = {
             "task_id": pending.payload.get("task_id") or None,
-            "action_id": pending.payload.get("action_id") or None,
+            "action_id": action_id or None,
             "observation_id": decision.observation_id,
             "visual_model": decision.visual.model,
             "regions": [region.__dict__ for region in decision.visual.regions],
             "plan": decision.plan.__dict__ if decision.plan else None,
             "state": decision.state.__dict__,
             "delta": decision.delta.__dict__,
-            "verification": {
-                "status": "verified" if changed else "unknown",
-                "confidence": 1.0 if changed else 0.0,
-                "evidence": reasons or ["no_verified_state_transition"],
-            },
+            "verification": verification,
         }
         if self.on_plan:
             await self.on_plan(result, decision.plan)
