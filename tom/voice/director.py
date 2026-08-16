@@ -21,10 +21,18 @@ class ConversationSignals:
     task_failed: bool = False
     user_is_sad: bool = False
     user_is_excited: bool = False
+    character_name: str = "TOM"
+    character_style: str = "friendly"
+    character_traits: tuple[str, ...] = ()
+    character_pitch_shift: float | None = None
+    character_speaking_rate: float | None = None
+    character_warmth: float | None = None
+    character_breathiness: float | None = None
+    character_expressiveness: float | None = None
 
 
 class VoiceDirector:
-    """Maps conversational context to controllable prosody."""
+    """Maps conversational context and user character settings to prosody."""
 
     _hinglish = re.compile(r"\b(bhai|yaar|acha|accha|haan|nahi|matlab|chalo|dekho)\b", re.IGNORECASE)
     _happy = re.compile(r"\b(great|awesome|yay|nice|mast|sahi|wah|haha|lol)\b", re.IGNORECASE)
@@ -49,25 +57,36 @@ class VoiceDirector:
     def direct(self, signals: ConversationSignals) -> VoiceStyle:
         text = signals.user_text
         if signals.task_failed or "error" in signals.situation.lower():
-            return VoiceStyle(emotion=Emotion.CONCERNED, intensity=0.48, speaking_rate=0.96, warmth=0.7,
-                              pause_scale=1.12, style_reason="task failure: slower, warm, solution-focused delivery")
-        if signals.task_succeeded:
-            return VoiceStyle(emotion=Emotion.HAPPY, intensity=0.58, speaking_rate=1.04, warmth=0.78,
-                              laugh_probability=0.08, style_reason="task success: brief natural positive lift")
-        if signals.user_is_sad or self._sad.search(text):
-            return VoiceStyle(emotion=Emotion.EMPATHETIC, intensity=0.35, speaking_rate=0.90, warmth=0.9,
-                              pause_scale=1.25, style_reason="sadness cue: calm empathetic delivery")
-        if signals.user_is_excited or self._happy.search(text):
-            return VoiceStyle(emotion=Emotion.AMUSED, intensity=0.62, speaking_rate=1.08, warmth=0.78,
-                              style_reason="positive cue: energetic but restrained delivery")
-        if signals.urgency >= 0.8:
-            return VoiceStyle(emotion=Emotion.SERIOUS, intensity=0.55, speaking_rate=1.08, pause_scale=0.82,
-                              style_reason="high urgency: concise delivery")
-        if signals.task_running:
-            return VoiceStyle(emotion=Emotion.WARM, intensity=0.32, speaking_rate=0.98, warmth=0.8,
-                              backchannel=True, style_reason="long-running task: short natural progress commentary")
-        if signals.is_interruption:
-            return VoiceStyle(emotion=Emotion.CALM, intensity=0.25, speaking_rate=1.0, pause_scale=0.8,
-                              style_reason="interruption: fast turn handoff")
-        return VoiceStyle(emotion=Emotion.WARM, intensity=0.4, speaking_rate=1.0, warmth=0.65,
-                          style_reason="default companion delivery")
+            style = VoiceStyle(emotion=Emotion.CONCERNED, intensity=0.48, speaking_rate=0.96, warmth=0.7,
+                               pause_scale=1.12, style_reason="task failure: slower, warm, solution-focused delivery")
+        elif signals.task_succeeded:
+            style = VoiceStyle(emotion=Emotion.HAPPY, intensity=0.58, speaking_rate=1.04, warmth=0.78,
+                               laugh_probability=0.08, style_reason="task success: brief natural positive lift")
+        elif signals.user_is_sad or self._sad.search(text):
+            style = VoiceStyle(emotion=Emotion.EMPATHETIC, intensity=0.35, speaking_rate=0.90, warmth=0.9,
+                               pause_scale=1.25, style_reason="sadness cue: calm empathetic delivery")
+        elif signals.user_is_excited or self._happy.search(text):
+            style = VoiceStyle(emotion=Emotion.AMUSED, intensity=0.62, speaking_rate=1.08, warmth=0.78,
+                               style_reason="positive cue: energetic but restrained delivery")
+        elif signals.urgency >= 0.8:
+            style = VoiceStyle(emotion=Emotion.SERIOUS, intensity=0.55, speaking_rate=1.08, pause_scale=0.82,
+                               style_reason="high urgency: concise delivery")
+        elif signals.task_running:
+            style = VoiceStyle(emotion=Emotion.WARM, intensity=0.32, speaking_rate=0.98, warmth=0.8,
+                               backchannel=True, style_reason="long-running task: short natural progress commentary")
+        elif signals.is_interruption:
+            style = VoiceStyle(emotion=Emotion.CALM, intensity=0.25, speaking_rate=1.0, pause_scale=0.8,
+                               style_reason="interruption: fast turn handoff")
+        else:
+            style = VoiceStyle(emotion=Emotion.WARM, intensity=0.4, speaking_rate=1.0, warmth=0.65,
+                               style_reason="default companion delivery")
+
+        # Character settings are a controlled layer over the situation-aware director.
+        style = style.model_copy(update={
+            "pitch_shift": signals.character_pitch_shift if signals.character_pitch_shift is not None else style.pitch_shift,
+            "speaking_rate": signals.character_speaking_rate if signals.character_speaking_rate is not None else style.speaking_rate,
+            "warmth": signals.character_warmth if signals.character_warmth is not None else style.warmth,
+            "breathiness": signals.character_breathiness if signals.character_breathiness is not None else style.breathiness,
+            "intensity": signals.character_expressiveness if signals.character_expressiveness is not None else style.intensity,
+        })
+        return style
