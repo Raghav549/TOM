@@ -92,7 +92,7 @@ class Qwen3TTSStreamingAdapter:
                     use_compile=os.getenv("TOM_QWEN3_TTS_COMPILE", "true").lower() not in {"0", "false", "no"},
                     compile_mode=os.getenv("TOM_QWEN3_TTS_COMPILE_MODE", "reduce-overhead"),
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001, S110
                 pass
         setattr(self, slot, model)
         return model
