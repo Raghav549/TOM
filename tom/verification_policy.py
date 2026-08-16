@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Mapping
+from typing import ClassVar, Mapping
 
 from .success_predicates import ActionKind
 
@@ -27,7 +27,7 @@ class VerificationRequirements:
 class VerificationPolicy:
     """Map action semantics/risk to deterministic evidence requirements."""
 
-    _CONSEQUENTIAL = {
+    _CONSEQUENTIAL: ClassVar[frozenset[str]] = frozenset({
         ActionKind.PAYMENT.value,
         ActionKind.UPI.value,
         ActionKind.SEND.value,
@@ -36,7 +36,7 @@ class VerificationPolicy:
         ActionKind.FORM_SUBMIT.value,
         ActionKind.UPLOAD.value,
         ActionKind.DOWNLOAD.value,
-    }
+    })
 
     def requirements(self, kind: str, risk: str = "reversible") -> VerificationRequirements:
         normalized = kind.lower().strip()
