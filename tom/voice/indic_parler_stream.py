@@ -16,13 +16,7 @@ class IndicParlerVoice:
 
 
 class IndicParlerStreamingAdapter:
-    """Open-source Indic Parler-TTS adapter.
-
-    Indic Parler is multilingual and supports explicit speaker descriptions,
-    emotion, rate, pitch and conversational style. The model itself generates
-    complete utterances, so TOM streams at sentence boundaries and keeps every
-    sentence independently cancellable.
-    """
+    """Open-source Indic Parler-TTS adapter with character/prosody prompting."""
 
     MODEL_ID = os.getenv("TOM_INDIC_PARLER_MODEL", "ai4bharat/indic-parler-tts")
     SAMPLE_RATE = 24_000
@@ -63,8 +57,6 @@ class IndicParlerStreamingAdapter:
 
     @staticmethod
     def _speaker_for(language: Language, voice: IndicParlerVoice) -> str:
-        # Keep the three TOM identities stable while selecting a native speaker
-        # available in the requested Indic language.
         female = voice.gender == "female"
         table = {
             Language.HI: ("Rohit", "Divya"),
@@ -97,10 +89,16 @@ class IndicParlerStreamingAdapter:
         speaker = self._speaker_for(language, profile)
         rate = "slow" if style.speaking_rate < 0.88 else "fast" if style.speaking_rate > 1.12 else "moderate"
         pitch = "low" if style.pitch_shift < -0.2 else "high" if style.pitch_shift > 0.2 else "moderate"
+        character = str(style.prosody_plan.get("character", "TOM"))
+        character_style = str(style.prosody_plan.get("character_style", "friendly+sigma"))
+        traits = ", ".join(style.prosody_plan.get("character_traits", []))
+        breath = "audible but subtle natural micro-breaths" if style.breathiness >= 0.35 else "natural breath timing"
+        laugh = "with a very subtle spontaneous laugh where semantically appropriate" if style.laugh_probability > 0.05 else "without forced laughter"
         return (
             f"{speaker}'s voice is {profile.gender}, with a {pitch} pitch and {rate} speaking rate. "
-            f"The speaker uses a {self._emotion_phrase(style)}, with natural pauses, subtle breath timing, "
-            "clear close-mic recording quality and human conversational delivery."
+            f"The speaker is {character}, a {character_style} character" + (f" with {traits} traits" if traits else "") + ". "
+            f"Use a {self._emotion_phrase(style)}, natural pauses, {breath}, and {laugh}. "
+            "Keep the delivery close-mic, clear, grounded and human; avoid theatrical overacting and robotic cadence."
         )
 
     def stream(self, text: str, *, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk]:
