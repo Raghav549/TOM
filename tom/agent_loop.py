@@ -27,7 +27,7 @@ class LoopEvent:
 
 @dataclass
 class AgentLoop:
-    """Observe -> act -> action-specific verify -> recover/continue loop."""
+    """Observe -> grounded act -> semantic verify -> recover/continue loop."""
 
     planner: Planner
     observer: Observer
@@ -53,7 +53,27 @@ class AgentLoop:
         raw = observation.get("evidence")
         if not isinstance(raw, list):
             return False
-        return any(bool(item.get("authoritative")) and float(item.get("confidence", 0)) >= 0.90 for item in raw if isinstance(item, Mapping))
+        return any(
+            isinstance(item, Mapping)
+            and bool(item.get("authoritative"))
+            and float(item.get("confidence", 0) or 0) >= 0.90
+            for item in raw
+        )
+
+    @staticmethod
+    def _is_terminal_observation(observation: Mapping[str, Any]) -> bool:
+        state = str(
+            observation.get("provider_payment_state")
+            or observation.get("payment_state")
+            or observation.get("send_state")
+            or observation.get("message_state")
+            or observation.get("call_state")
+            or observation.get("form_state")
+            or observation.get("file_state")
+            or observation.get("result_state")
+            or ""
+        ).lower()
+        return state not in {"", "pending", "processing", "loading", "requires_action", "authorization_required", "unknown"}
 
     async def _verify_action(self, action: Mapping[str, Any], post_state: Mapping[str, Any]) -> Any:
         kind = str(action.get("kind", action.get("tool", "generic")))
@@ -63,11 +83,13 @@ class AgentLoop:
         for poll in range(self.max_verification_polls):
             last_result = self.verifier.verify(action, post_state)
             authoritative = self._has_authoritative_evidence(post_state)
+            terminal = self._is_terminal_observation(post_state)
             accepted = self.verification_policy.accept(
                 last_result.state.value,
                 last_result.confidence,
                 requirements=requirements,
                 authoritative=authoritative,
+                terminal=terminal,
             )
             await self._emit(
                 LoopEvent(
@@ -79,6 +101,9 @@ class AgentLoop:
                         "state": last_result.state.value,
                         "confidence": last_result.confidence,
                         "accepted": accepted,
+                        "authoritative": authoritative,
+                        "terminal": terminal,
+                        "predicate": last_result.reason,
                     },
                 )
             )
@@ -111,7 +136,7 @@ class AgentLoop:
                 await self._emit(LoopEvent("blocked", "I cannot find a grounded next action yet."))
                 return {"status": "blocked", "step": step, "history": history}
 
-            tool_name = str(action.get("tool", ""))
+            tool_name = str(action.get("tool", action.get("kind", "")))
             args = action.get("arguments", {})
             if not isinstance(args, Mapping):
                 return {"status": "failed", "reason": "tool arguments must be an object", "history": history}
@@ -140,6 +165,7 @@ class AgentLoop:
                     "state": verification.state.value if verification else VerificationState.UNKNOWN.value,
                     "reason": verification.reason if verification else "verification unavailable",
                     "confidence": verification.confidence if verification else 0.0,
+                    "evidence": [e.__dict__ for e in verification.evidence] if verification else [],
                 },
             }
 
@@ -148,13 +174,12 @@ class AgentLoop:
                     LoopEvent(
                         "verification_failed",
                         "The action ran, but its expected outcome was not confirmed, so I will not assume success.",
-                        {"tool": tool_name, "step": step, "state": verification.state.value if verification else "unknown"},
+                        {"tool": tool_name, "step": step, "state": verification.state.value if verification else "unknown", "reason": verification.reason if verification else "unknown"},
                     )
                 )
                 continue
 
             await self._emit(LoopEvent("verified", "The expected postcondition is confirmed.", {"tool": tool_name, "step": step}))
-
             if bool(action.get("done", False)):
                 return {"status": "completed", "step": step, "history": history}
 
