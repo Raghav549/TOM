@@ -24,17 +24,29 @@ class ActionPreconditionChecker:
         "device_open_url": ("url",),
         "device_send_message": ("recipient", "message"),
         "device_send_email": ("recipient", "subject", "body"),
-        "device_create_calendar_event": ("title", "start_time"),
-        "device_upi_payment": ("pa", "pn", "am"),
+    }
+
+    ALTERNATIVE_ARGUMENTS: ClassVar[dict[str, tuple[tuple[str, ...], ...]]] = {
+        "device_create_calendar_event": (("title", "start_time"), ("title", "start_millis", "end_millis")),
+        # UPI may arrive either as a fully formed intent URI or as structured
+        # payee/amount fields that a trusted adapter can normalize.
+        "device_upi_payment": (("intent_uri",), ("pa", "pn", "am")),
     }
 
     CONSEQUENTIAL: ClassVar[frozenset[Risk]] = frozenset({Risk.HIGH, Risk.CRITICAL})
 
     def check(self, call: ToolCall, *, observed_state: dict[str, Any] | None = None) -> PreconditionResult:
         args = dict(call.arguments)
-        for key in self.REQUIRED_ARGUMENTS.get(call.name, ()):
+        required = self.REQUIRED_ARGUMENTS.get(call.name, ())
+        for key in required:
             if key not in args or args[key] in (None, ""):
                 return PreconditionResult(False, f"missing required argument: {key}")
+
+        alternatives = self.ALTERNATIVE_ARGUMENTS.get(call.name, ())
+        if alternatives and not any(all(args.get(key) not in (None, "") for key in group) for group in alternatives):
+            expected = " or ".join(" + ".join(group) for group in alternatives)
+            return PreconditionResult(False, f"missing required arguments: {expected}")
+
         state = observed_state or {}
         expected_package = str(args.get("expected_package", "")).strip()
         current_package = str(state.get("package_name", "")).strip()
