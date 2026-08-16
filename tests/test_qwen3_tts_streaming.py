@@ -34,8 +34,9 @@ def test_qwen_streams_model_chunks_without_full_generation(monkeypatch):
 
 
 def test_float_audio_is_converted_to_int16():
-    import numpy as np
+    import pytest
 
+    np = pytest.importorskip("numpy")
     pcm = Qwen3TTSStreamingAdapter._to_pcm16_bytes(np.array([-1.0, 0.0, 1.0], dtype=np.float32))
     values = np.frombuffer(pcm, dtype=np.int16)
     assert values.tolist() == [-32767, 0, 32767]
