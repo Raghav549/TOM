@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
@@ -101,6 +102,55 @@ class AgentRuntime:
         await self.events_bus.publish(terminal_type, {"task_id": request.conversation_id, "message": terminal_message, "goal": plan.goal})
         await self.events_bus.publish("assistant.reply", {"task_id": request.conversation_id, "reply": reply, "pending": len(pending), "terminal": True})
         return AgentResponse(conversation_id=request.conversation_id, reply=reply, plan=plan, pending_approval=pending, results=results, events=events)
+
+    async def stream_conversational_response(self, request: AgentRequest) -> AsyncIterator[str]:
+        """Stream safe, no-tool conversational replies token-by-token.
+
+        Tool-bearing turns stay on the normal verified execution path. This
+        prevents speculative voice tokens from ever triggering an action.
+        """
+        self.memory.add(request.conversation_id, "user", request.message, request.context)
+        context = dict(request.context)
+        context["memory"] = self.memory.recent(request.conversation_id)
+        context["available_tools"] = self.tools.describe()
+        plan = await self.planner.plan(request.message, context)
+
+        if plan.needs_clarification:
+            question = plan.clarification_question.strip() or "Which option do you want me to use?"
+            self.memory.add(request.conversation_id, "assistant", question, {"clarification": True})
+            await self.events_bus.publish("clarification.required", {
+                "task_id": request.conversation_id, "goal": request.message, "question": question,
+            })
+            yield question
+            return
+
+        if plan.steps:
+            response = await self.handle(AgentRequest(
+                message=request.message,
+                conversation_id=request.conversation_id,
+                context=request.context,
+                dry_run=request.dry_run,
+            ))
+            yield response.reply
+            return
+
+        chunks: list[str] = []
+        events: list[dict[str, Any]] = []
+        async for token in self.responder.stream(user_message=request.message, events=events, context=context):
+            if not token:
+                continue
+            chunks.append(token)
+            await self.events_bus.publish("assistant.partial", {
+                "task_id": request.conversation_id, "text": token,
+            })
+            yield token
+
+        reply = "".join(chunks).strip()
+        if reply:
+            self.memory.add(request.conversation_id, "assistant", reply, {"streamed": True})
+            await self.events_bus.publish("assistant.reply", {
+                "task_id": request.conversation_id, "reply": reply, "pending": 0, "terminal": True,
+            })
 
     def pending(self, conversation_id: str) -> list[ToolCall]:
         return list(self._pending.get(conversation_id, []))
