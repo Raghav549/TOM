@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -16,6 +14,17 @@ class AgentEventBus:
 
     def subscribe(self, event_type: str, handler: EventHandler) -> None:
         self._handlers[event_type].append(handler)
+
+    def unsubscribe(self, event_type: str, handler: EventHandler) -> None:
+        handlers = self._handlers.get(event_type)
+        if not handlers:
+            return
+        try:
+            handlers.remove(handler)
+        except ValueError:
+            return
+        if not handlers:
+            self._handlers.pop(event_type, None)
 
     async def publish(self, event_type: str, payload: dict[str, Any]) -> None:
         event = {"type": event_type, **payload}
