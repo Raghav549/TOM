@@ -24,15 +24,30 @@ class AndroidDeviceTool:
             raise ValueError("device_id is required")
         task_id = str(arguments.get("task_id") or uuid4())
         approval = arguments.get("approval_token")
-        action_arguments = {key: value for key, value in arguments.items() if key not in {"device_id", "task_id", "approval_token"}}
+        action_arguments = {
+            key: value
+            for key, value in arguments.items()
+            if key not in {"device_id", "task_id", "approval_token"}
+        }
         action_arguments = self._normalize(action_arguments)
-        result = await self.hub.request_action(device_id=device_id, task_id=task_id, action=self.action, arguments=action_arguments, approval_token=str(approval) if approval else None)
-        if not result.get("accepted") or result.get("status") != "completed":
+        result = await self.hub.request_action(
+            device_id=device_id,
+            task_id=task_id,
+            action=self.action,
+            arguments=action_arguments,
+            approval_token=str(approval) if approval else None,
+        )
+        # When multimodal verification is enabled, Core deliberately returns
+        # `verified`/`unknown` instead of pretending transport success is enough.
+        accepted_statuses = {"completed", "verified"}
+        if not result.get("accepted") or result.get("status") not in accepted_statuses:
             return {"ok": False, "action": self.action, "result": result}
-        observation = await self.hub.request_observation(device_id, task_id, str(result.get("action_id")), timeout=8.0)
-        if observation is None:
-            return {"ok": False, "action": self.action, "result": result, "verification": None, "error": "post_action_observation_timeout"}
-        return {"ok": True, "action": self.action, "result": result, "verification": observation}
+        return {
+            "ok": True,
+            "action": self.action,
+            "result": result,
+            "verification": result.get("verification"),
+        }
 
     def _normalize(self, arguments: dict[str, Any]) -> dict[str, Any]:
         result = dict(arguments)
