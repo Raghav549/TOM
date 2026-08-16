@@ -33,7 +33,7 @@ def _next_or_none(iterator):
 
 
 class LiveVoiceConnection:
-    """Continuous full-duplex voice transport with neural VAD + learned endpointing."""
+    """Continuous full-duplex voice transport with adaptive expressive TTS."""
 
     def __init__(self, websocket: WebSocket, runtime: AgentRuntime) -> None:
         self.websocket = websocket
@@ -47,6 +47,14 @@ class LiveVoiceConnection:
         self.turns = DuplexTurnManager()
         self.conversation_id = str(uuid4())
         self.voice_id = "tom_m1"
+        self.character_name = "TOM"
+        self.character_style = "friendly"
+        self.character_traits: tuple[str, ...] = ()
+        self.character_pitch_shift: float | None = None
+        self.character_speaking_rate: float | None = None
+        self.character_warmth: float | None = None
+        self.character_breathiness: float | None = None
+        self.character_expressiveness: float | None = None
         self.audio_sample_rate = 16000
         self.turn_audio = bytearray()
         self.pending_audio = bytearray()
@@ -81,6 +89,22 @@ class LiveVoiceConnection:
         )
         await self.send_event("audio_stop", reason=reason, cancelled=True, resumable=bool(self.pending_tts_text))
 
+    def _signals(self, *, user_text: str, state) -> ConversationSignals:
+        return ConversationSignals(
+            user_text=user_text,
+            user_is_excited=state.arousal >= 0.58,
+            user_arousal=state.arousal,
+            user_valence=state.valence_hint,
+            character_name=self.character_name,
+            character_style=self.character_style,
+            character_traits=self.character_traits,
+            character_pitch_shift=self.character_pitch_shift,
+            character_speaking_rate=self.character_speaking_rate,
+            character_warmth=self.character_warmth,
+            character_breathiness=self.character_breathiness,
+            character_expressiveness=self.character_expressiveness,
+        )
+
     async def speak(self, text: str, *, voice_id: str | None = None,
                     signals: ConversationSignals | None = None, resume: bool = False) -> None:
         selected = voice_id or self.voice_id
@@ -95,8 +119,10 @@ class LiveVoiceConnection:
         self.tom_speaking = True
         try:
             await self.send_event("audio_start", sample_rate=24000, channels=1, encoding="pcm_s16le",
-                                  text=remaining, voice_id=selected, resumed=resume,
-                                  tts_engine=os.getenv("TOM_TTS_ENGINE", "indic-parler"))
+                                  text=remaining, voice_id=selected, character_name=self.character_name,
+                                  character_style=self.character_style, resumed=resume,
+                                  tts_engine=os.getenv("TOM_TTS_ENGINE", "hybrid"),
+                                  expressive=True, prosody_control=True, breath_timing=True)
             for index in range(self.pending_tts_index, len(segments)):
                 self.pending_tts_index = index
                 segment = segments[index]
@@ -166,8 +192,6 @@ class LiveVoiceConnection:
                 self.turn_audio.clear()
                 self.awaiting_endpoint = False
             else:
-                # Preserve the whole turn. If the user resumes speaking, the next
-                # speech segment is appended instead of starting a new semantic turn.
                 self.awaiting_endpoint = True
                 await self.send_event("state", value="waiting_for_user_continuation")
 
@@ -212,13 +236,15 @@ class LiveVoiceConnection:
             context={"voice_turn": True, "asr_confidence": final.confidence,
                      "user_language": final.language, "user_pitch_hz": state.mean_pitch_hz,
                      "user_pitch_variation": state.pitch_variation, "user_energy": state.energy,
-                     "user_arousal": state.arousal, "user_valence_hint": state.valence_hint},
+                     "user_arousal": state.arousal, "user_valence_hint": state.valence_hint,
+                     "companion_name": self.character_name, "companion_style": self.character_style,
+                     "companion_traits": list(self.character_traits)},
         ))
-        await self.send_event("response", text=response.reply, conversation_id=self.conversation_id)
+        await self.send_event("response", text=response.reply, conversation_id=self.conversation_id,
+                              character_name=self.character_name)
         self.tts_task = asyncio.create_task(self.speak(
             response.reply,
-            signals=ConversationSignals(user_text=text, user_is_excited=state.arousal >= 0.58,
-                                       user_arousal=state.arousal, user_valence=state.valence_hint),
+            signals=self._signals(user_text=text, state=state),
         ))
         try:
             await self.tts_task
@@ -227,16 +253,48 @@ class LiveVoiceConnection:
         finally:
             self.tts_task = None
 
+    @staticmethod
+    def _clamp(value, low: float, high: float):
+        if value is None:
+            return None
+        return max(low, min(high, float(value)))
+
+    def _apply_character(self, payload: dict) -> None:
+        character = payload.get("character") or {}
+        if not isinstance(character, dict):
+            character = {}
+        self.character_name = str(character.get("name") or payload.get("name") or "TOM").strip()[:64] or "TOM"
+        self.character_style = str(character.get("style") or payload.get("style") or "friendly").strip()[:64] or "friendly"
+        traits = character.get("traits") or payload.get("traits") or []
+        if isinstance(traits, str):
+            traits = [traits]
+        self.character_traits = tuple(str(item).strip()[:48] for item in traits if str(item).strip())[:12]
+        self.character_pitch_shift = self._clamp(character.get("pitch_shift"), -1.0, 1.0)
+        self.character_speaking_rate = self._clamp(character.get("speaking_rate"), 0.65, 1.35)
+        self.character_warmth = self._clamp(character.get("warmth"), 0.0, 1.0)
+        self.character_breathiness = self._clamp(character.get("breathiness"), 0.0, 1.0)
+        self.character_expressiveness = self._clamp(character.get("expressiveness"), 0.0, 1.0)
+
     async def handle_text(self, message: str) -> None:
         payload = json.loads(message)
         event_type = payload.get("type", "")
         if event_type == "hello":
             self.voice_id = payload.get("voice_id", "tom_m1")
             self.audio_sample_rate = int(payload.get("sample_rate", 16000))
-            await self.send_event("ready", protocol=2, conversation_id=self.conversation_id, sample_rate=24000,
+            self._apply_character(payload)
+            await self.send_event("ready", protocol=3, conversation_id=self.conversation_id, sample_rate=24000,
                                   continuous_audio=True, neural_vad=self._neural_vad,
                                   learned_turn_prediction=self.turn_predictor.configured,
-                                  smart_turn=self.smart_turn.configured)
+                                  smart_turn=self.smart_turn.configured,
+                                  character={"name": self.character_name, "style": self.character_style,
+                                             "traits": list(self.character_traits)},
+                                  voice_capabilities=["emotion", "pitch", "rate", "warmth", "breath_timing",
+                                                       "character_style", "voice_design", "barge_in", "resume"],
+                                  default_character={"name": "TOM", "style": "friendly", "traits": ["helpful", "warm"]})
+        elif event_type == "set_character":
+            self._apply_character(payload)
+            await self.send_event("character_updated", name=self.character_name, style=self.character_style,
+                                  traits=list(self.character_traits))
         elif event_type == "interrupt":
             await self.interrupt(payload.get("reason", "user_barge_in"))
         elif event_type == "audio_start":
@@ -256,7 +314,7 @@ class LiveVoiceConnection:
                 await self.send_event("resume", supported=False, reason="no resumable TTS segment")
 
     async def run(self) -> None:
-        await self.send_event("connected", protocol=2)
+        await self.send_event("connected", protocol=3)
         try:
             while True:
                 message = await self.websocket.receive()
