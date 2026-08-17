@@ -42,6 +42,8 @@ object TomGlassUi {
         intArrayOf(Color.rgb(18, 18, 18), brown)
     ).apply { cornerRadius = 22f }
 
+    fun darkActionForCard(): GradientDrawable = darkAction()
+
     fun text(context: Context, value: String, size: Float, color: Int = ink): TextView = TextView(context).apply {
         text = value
         textSize = size
@@ -85,7 +87,6 @@ object TomGlassUi {
             val s = min(width, height).toFloat()
             val cx = s / 2f
             val cy = s / 2f
-
             paint.style = Paint.Style.FILL
             paint.color = Color.rgb(250, 248, 245)
             canvas.drawCircle(cx, cy, s * .47f, paint)
@@ -93,7 +94,6 @@ object TomGlassUi {
             paint.strokeWidth = s * .018f
             paint.color = Color.rgb(224, 217, 210)
             canvas.drawCircle(cx, cy, s * .47f, paint)
-
             paint.strokeWidth = s * .045f
             paint.strokeCap = Paint.Cap.ROUND
             paint.color = ink
@@ -103,14 +103,12 @@ object TomGlassUi {
                 quadTo(s * .65f, s * .68f, s * .79f, s * .38f)
             }
             canvas.drawPath(wave, paint)
-
             paint.style = Paint.Style.FILL
             paint.color = brown
             canvas.drawCircle(s * .77f, s * .28f, s * .055f, paint)
-
             if (size >= 100) {
-                paint.color = Color.argb(125, 122, 78, 47)
                 val t = phase * 6.28318f
+                paint.color = Color.argb(125, 122, 78, 47)
                 for (i in 0 until 8) {
                     val a = t + i * .7854f
                     val radius = s * (.25f + .18f * ((i % 3) / 2f))
