@@ -2,15 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .success_predicates import SuccessPredicateEngine, VerificationResult, VerificationState
+from .success_predicates import Evidence, SuccessPredicateEngine, VerificationResult, VerificationState
 
 
 class ActionEffectVerifier:
-    """Normalizes observations before action-specific verification.
-
-    Transport ACKs are never treated as task success. Consequential payment
-    actions additionally require authoritative provider terminal evidence.
-    """
+    """Normalizes observations before action-specific verification."""
 
     def __init__(self) -> None:
         self.engine = SuccessPredicateEngine()
@@ -88,26 +84,15 @@ class ActionEffectVerifier:
 
     def verify(self, *, action_kind: str, expected: Mapping[str, Any], observation: Mapping[str, Any] | None) -> VerificationResult:
         normalized = self.normalize(observation)
-        result = self.engine.verify(
-            {"kind": action_kind, "success_predicate": dict(expected)},
-            normalized,
-        )
+        result = self.engine.verify({"kind": action_kind, "success_predicate": dict(expected)}, normalized)
 
-        # A payment is successful only when an authoritative provider reports
-        # a terminal success state. A transaction ID alone or a UI message is
-        # insufficient. This is intentionally deterministic and auditable.
         if action_kind in {"upi", "payment", "device_upi_payment"}:
             status = str(normalized.get("provider_status") or normalized.get("provider_payment_state") or "").casefold()
             authoritative = bool(normalized.get("provider_authoritative"))
             success_states = {str(x).casefold() for x in expected.get("success_states", ("success", "succeeded", "completed", "paid"))}
             if authoritative and status in success_states and normalized.get("transaction_id"):
-                return VerificationResult(
-                    VerificationState.VERIFIED,
-                    "authoritative payment provider terminal success",
-                    0.99,
-                    tuple(result.evidence) + (type("Evidence", (), {"kind": "authoritative_provider"})(),),
-                    normalized,
-                )
+                evidence = tuple(result.evidence) + (Evidence("authoritative_provider", status, 0.99, True, "provider"),)
+                return VerificationResult(VerificationState.VERIFIED, "authoritative payment provider terminal success", 0.99, evidence, normalized)
             if status in {"pending", "processing", "requires_action", "authorization_required"}:
                 return VerificationResult(VerificationState.UNKNOWN, "payment is not terminal", result.confidence, result.evidence, normalized)
             if status in {"failed", "declined", "cancelled", "canceled"}:
