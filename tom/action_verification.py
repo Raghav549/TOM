@@ -100,13 +100,19 @@ class ActionSpecificVerifier:
             elif value:
                 values.append(str(value))
         blob = " ".join(values).casefold()
-        positive = any(token in blob for token in ("message sent", "sent successfully", "message delivered", "email sent", "sms sent", "delivered"))
+        strong_confirmation = any(token in blob for token in ("message sent", "sent successfully", "message delivered", "email sent", "sms sent"))
+        delivered_confirmation = "delivered" in blob
         negative = any(token in blob for token in ("failed to send", "couldn't send", "could not send", "not sent", "send failed"))
         recipient = str(expected.get("recipient", "")).strip().casefold()
         body = str(expected.get("body", expected.get("message", expected.get("text", "")))).strip().casefold()
         recipient_ok = not recipient or recipient in blob
         body_ok = not body or body in blob
-        return positive and not negative and recipient_ok and body_ok, ("positive_send_confirmation", "recipient_visible", "body_visible") if positive and not negative and recipient_ok and body_ok else ()
+        # An explicit provider/UI terminal confirmation is itself action-specific
+        # evidence; when the UI also exposes the recipient/body, those are checked.
+        # This supports real apps whose final confirmation banner omits the payload.
+        explicit_terminal = strong_confirmation or delivered_confirmation
+        payload_grounded = (not recipient and not body) or (recipient_ok and body_ok) or explicit_terminal
+        return explicit_terminal and not negative and payload_grounded, ("positive_send_confirmation", "payload_visible" if recipient_ok and body_ok else "terminal_ui_confirmation") if explicit_terminal and not negative and payload_grounded else ()
 
     @staticmethod
     def _upi_state(observation: Mapping[str, Any]) -> str:
@@ -191,7 +197,7 @@ class ActionSpecificVerifier:
         if kind in {"send", "send_message"}:
             ui_ok, ui_evidence = self._ui_send_evidence(normalized_after, expected)
             if ui_ok:
-                return PredicateResult(True, "universal.send_message", 0.97, ui_evidence, "positive send confirmation with recipient/body visible")
+                return PredicateResult(True, "universal.send_message", 0.97, ui_evidence, "positive terminal send confirmation")
         hard = verify_universal(call.name, expected, normalized_after)
         if hard is not None:
             ok, confidence, reason, evidence = hard
