@@ -27,7 +27,15 @@ def test_search_requires_result_state_and_query() -> None:
 
 def test_upi_pending_is_not_success() -> None:
     verifier = ActionEffectVerifier()
-    pending = verifier.verify(action_kind="upi", expected={"success_states": ["success", "completed"]}, observation={"provider_status": "pending", "transaction_id": "tx-1"})
-    success = verifier.verify(action_kind="upi", expected={"success_states": ["success", "completed"]}, observation={"provider_status": "completed", "transaction_id": "tx-1"})
+    pending = verifier.verify(
+        action_kind="upi",
+        expected={"success_states": ["success", "completed"]},
+        observation={"provider_status": "pending", "transaction_id": "tx-1", "provider_authoritative": True},
+    )
+    success = verifier.verify(
+        action_kind="upi",
+        expected={"success_states": ["success", "completed"]},
+        observation={"provider_status": "completed", "transaction_id": "tx-1", "provider_authoritative": True},
+    )
     assert not pending.verified
     assert success.verified
