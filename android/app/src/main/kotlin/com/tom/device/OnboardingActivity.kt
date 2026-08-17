@@ -38,19 +38,19 @@ class OnboardingActivity : android.app.Activity() {
 
     private fun showSystemSplash() {
         val splash = FrameLayout(this).apply { setBackgroundColor(Color.WHITE) }
+        val progress = TextView(this).apply {
+            text = "0%"
+            gravity = Gravity.CENTER
+            textSize = 13f
+            setTextColor(TomGlassUi.brown)
+            setPadding(0, 14, 0, 0)
+        }
         val center = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             addView(TomGlassUi.logo(this@OnboardingActivity, 150), LinearLayout.LayoutParams(150, 150))
             addView(TomGlassUi.title(this@OnboardingActivity, "TOM", 40f).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, 54))
             addView(TomGlassUi.body(this@OnboardingActivity, "Building your private AI companion").apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, 32))
-            val progress = TextView(this@OnboardingActivity).apply {
-                text = "0%"
-                gravity = Gravity.CENTER
-                textSize = 13f
-                setTextColor(TomGlassUi.brown)
-                setPadding(0, 14, 0, 0)
-            }
             addView(progress, LinearLayout.LayoutParams(-1, 42))
         }
         splash.addView(center, FrameLayout.LayoutParams(-1, -1))
@@ -61,7 +61,7 @@ class OnboardingActivity : android.app.Activity() {
         var value = 0
         val tick = object : Runnable {
             override fun run() {
-                value += 4
+                value = (value + 4).coerceAtMost(100)
                 progress.text = "$value%"
                 center.scaleX = .98f + value / 100f * .02f
                 if (value < 100) Handler(Looper.getMainLooper()).postDelayed(this, 45)
