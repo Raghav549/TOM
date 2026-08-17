@@ -14,7 +14,7 @@ class BrowserSnapshot:
 
 
 class PlaywrightBrowser:
-    """Real visible browser runtime with an explicit navigation safety boundary."""
+    """Real visible browser runtime with grounded interaction primitives."""
 
     def __init__(self, *, allowed_hosts: set[str] | None = None, headless: bool = False) -> None:
         self.policy = BrowserSafetyPolicy(allowed_hosts=allowed_hosts)
@@ -72,9 +72,71 @@ class PlaywrightBrowser:
         await page.locator(selector).first.click()
         return await self.snapshot()
 
+    async def click_role(self, role: str, name: str, exact: bool = False) -> BrowserSnapshot:
+        page = self._require_page()
+        await page.get_by_role(role, name=name, exact=exact).first.click()
+        return await self.snapshot()
+
     async def fill(self, selector: str, value: str) -> BrowserSnapshot:
         page = self._require_page()
         await page.locator(selector).first.fill(value)
+        return await self.snapshot()
+
+    async def fill_label(self, label: str, value: str, exact: bool = False) -> BrowserSnapshot:
+        page = self._require_page()
+        await page.get_by_label(label, exact=exact).first.fill(value)
+        return await self.snapshot()
+
+    async def press(self, selector: str, key: str = "Enter") -> BrowserSnapshot:
+        page = self._require_page()
+        await page.locator(selector).first.press(key)
+        return await self.snapshot()
+
+    async def press_key(self, key: str) -> BrowserSnapshot:
+        page = self._require_page()
+        await page.keyboard.press(key)
+        return await self.snapshot()
+
+    async def scroll(self, *, amount: int = 700, selector: str | None = None) -> BrowserSnapshot:
+        page = self._require_page()
+        if selector:
+            await page.locator(selector).first.scroll_into_view_if_needed()
+        else:
+            await page.mouse.wheel(0, amount)
+        return await self.snapshot()
+
+    async def check(self, selector: str) -> BrowserSnapshot:
+        page = self._require_page()
+        await page.locator(selector).first.check()
+        return await self.snapshot()
+
+    async def uncheck(self, selector: str) -> BrowserSnapshot:
+        page = self._require_page()
+        await page.locator(selector).first.uncheck()
+        return await self.snapshot()
+
+    async def select(self, selector: str, value: str) -> BrowserSnapshot:
+        page = self._require_page()
+        await page.locator(selector).first.select_option(value)
+        return await self.snapshot()
+
+    async def hover(self, selector: str) -> BrowserSnapshot:
+        page = self._require_page()
+        await page.locator(selector).first.hover()
+        return await self.snapshot()
+
+    async def wait_for(self, selector: str | None = None, timeout_ms: int = 1000) -> BrowserSnapshot:
+        page = self._require_page()
+        timeout_ms = max(0, min(30_000, int(timeout_ms)))
+        if selector:
+            await page.locator(selector).first.wait_for(timeout=timeout_ms)
+        else:
+            await page.wait_for_timeout(timeout_ms)
+        return await self.snapshot()
+
+    async def reload(self) -> BrowserSnapshot:
+        page = self._require_page()
+        await page.reload(wait_until="domcontentloaded")
         return await self.snapshot()
 
     async def back(self) -> BrowserSnapshot:
