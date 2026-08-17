@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from tom.action_effect_verifier import ActionEffectVerifier
 from tom.action_verification import ActionSpecificVerifier
 from tom.models import ToolCall, ToolResult
 from tom.perception.pipeline import MultimodalRuntime
@@ -17,7 +18,7 @@ class PendingObservation:
 
 
 class CoreBridgeReceiver:
-    """Reconstruct Android screenshots and bind multimodal evidence to predicates."""
+    """Reconstruct Android screenshots and bind fresh evidence to predicates."""
 
     def __init__(
         self,
@@ -30,6 +31,7 @@ class CoreBridgeReceiver:
         self.on_plan = on_plan
         self.on_result = on_result
         self.verifier = verifier or ActionSpecificVerifier()
+        self.effect_verifier = ActionEffectVerifier()
         self.pending: dict[str, PendingObservation] = {}
         self._aliases: dict[str, str] = {}
         self._before: dict[str, dict[str, Any]] = {}
@@ -149,7 +151,6 @@ class CoreBridgeReceiver:
         after_state = dict(pending.payload.get("snapshot") or {})
         before_state = dict(self._before.get(action_id) or {})
         if call is None:
-            # No registered action means this is perception-only; do not pretend it proves success.
             verification = {
                 "status": "observed",
                 "confidence": 0.0,
@@ -159,14 +160,29 @@ class CoreBridgeReceiver:
             }
         else:
             result = ToolResult(tool=call.name, success=True, output={"observation_received": True})
-            verdict = self.verifier.verify(call, result, before=before_state, after=after_state, provider={})
-            verification = {
-                "status": "verified" if verdict.ok else "failed",
-                "confidence": verdict.confidence,
-                "predicate": verdict.predicate,
-                "evidence": list(verdict.evidence),
-                "reason": verdict.reason,
-            }
+            explicit = call.arguments.get("success_predicate")
+            if isinstance(explicit, dict):
+                verdict = self.effect_verifier.verify(
+                    action_kind=str(call.name),
+                    expected=explicit,
+                    observation=after_state,
+                )
+                verification = {
+                    "status": "verified" if verdict.verified else ("unknown" if verdict.state.value == "unknown" else "failed"),
+                    "confidence": verdict.confidence,
+                    "predicate": str(explicit.get("name") or call.name),
+                    "evidence": [e.kind for e in verdict.evidence],
+                    "reason": verdict.reason,
+                }
+            else:
+                verdict = self.verifier.verify(call, result, before=before_state, after=after_state, provider={})
+                verification = {
+                    "status": "verified" if verdict.ok else "failed",
+                    "confidence": verdict.confidence,
+                    "predicate": verdict.predicate,
+                    "evidence": list(verdict.evidence),
+                    "reason": verdict.reason,
+                }
         result = {
             "task_id": pending.payload.get("task_id") or None,
             "action_id": action_id or None,
