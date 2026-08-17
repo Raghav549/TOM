@@ -4,13 +4,10 @@ import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * Receives real device notifications without requiring the notification shade
- * to be opened. The normalized event is persisted in NotificationEventStore
- * so the live bridge can consume it on its next observation cycle.
- */
+/** Receives real device notifications and stores normalized events for the live bridge. */
 class TomNotificationListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val notification = sbn.notification ?: return
@@ -32,19 +29,17 @@ class TomNotificationListener : NotificationListenerService() {
             put("ongoing", sbn.isOngoing)
             put("clearable", sbn.isClearable)
         }.toString()
-
         NotificationEventStore.append(this, event)
         Log.d("TOM", "notification.posted package=${sbn.packageName}")
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        val event = JSONObject().apply {
+        NotificationEventStore.append(this, JSONObject().apply {
             put("event", "notification.removed")
             put("key", sbn.key)
             put("package_name", sbn.packageName)
             put("removed_at", System.currentTimeMillis())
-        }.toString()
-        NotificationEventStore.append(this, event)
+        }.toString())
     }
 }
 
@@ -56,15 +51,17 @@ object NotificationEventStore {
     @Synchronized
     fun append(context: android.content.Context, event: String) {
         val prefs = context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
-        val current = prefs.getStringSet(KEY_EVENTS, emptySet())?.toMutableSet() ?: mutableSetOf()
-        // A set is used only as a compact bounded durable buffer; consumers
-        // should sort by posted_at/removed_at before presenting history.
-        current.add(event)
-        while (current.size > MAX_EVENTS) current.remove(current.first())
-        prefs.edit().putStringSet(KEY_EVENTS, current).apply()
+        val array = JSONArray(prefs.getString(KEY_EVENTS, "[]") ?: "[]")
+        array.put(event)
+        val start = maxOf(0, array.length() - MAX_EVENTS)
+        val bounded = JSONArray()
+        for (index in start until array.length()) bounded.put(array.getString(index))
+        prefs.edit().putString(KEY_EVENTS, bounded.toString()).apply()
     }
 
-    fun snapshot(context: android.content.Context): List<String> =
-        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
-            .getStringSet(KEY_EVENTS, emptySet())?.toList().orEmpty()
+    fun snapshot(context: android.content.Context): List<String> {
+        val array = JSONArray(context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            .getString(KEY_EVENTS, "[]") ?: "[]")
+        return (0 until array.length()).map { array.getString(it) }
+    }
 }
