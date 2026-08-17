@@ -37,6 +37,23 @@ class AgentRuntime:
     _tasks: dict[str, TaskState] = field(default_factory=dict)
     _live: dict[str, LiveExecutionContext] = field(default_factory=dict)
 
+    @staticmethod
+    def _fresh_observation(result: ToolResult, context: dict[str, Any]) -> dict[str, Any]:
+        """Prefer the executor's fresh observation over stale planner context.
+
+        Device/browser executors may return ``observation``, ``post_observation``
+        or ``screen_state_after`` alongside their ACK/result. Keeping this
+        extraction in one place prevents a successful transport ACK from being
+        mistaken for semantic success.
+        """
+        output = result.output if isinstance(result.output, dict) else {}
+        for key in ("post_observation", "observation", "screen_state_after", "after"):
+            value = output.get(key)
+            if isinstance(value, dict):
+                return dict(value)
+        value = context.get("screen_state_after")
+        return dict(value) if isinstance(value, dict) else {}
+
     async def handle(self, request: AgentRequest) -> AgentResponse:
         request_context = dict(request.context)
         skip_user_memory = bool(request_context.pop("_skip_user_memory", False))
@@ -106,7 +123,7 @@ class AgentRuntime:
         if pending:
             await self.events_bus.publish("task.waiting_approval", {"task_id": request.conversation_id, "message": reply, "pending": len(pending), "terminal": False})
         else:
-            completed = bool(results) and all(item.success for item in results) and not any(item.status if hasattr(item, "status") else False for item in results)
+            completed = bool(results) and all(item.success for item in results) and task.completed
             terminal_type = "TASK_COMPLETED" if completed else "TASK_FAILED"
             events.append({"type": terminal_type, "message": reply, "goal": plan.goal})
             await self.events_bus.publish(terminal_type, {"task_id": request.conversation_id, "message": reply, "goal": plan.goal})
@@ -197,12 +214,12 @@ class AgentRuntime:
         reply = await self.responder.respond(user_message="approved action", events=events, context=context)
         self.memory.add(conversation_id, "assistant", reply, {"events": events, "result": result.model_dump()})
         terminal = not calls
-        await self.events_bus.publish("assistant.reply", {"task_id": conversation_id, "reply": reply, "pending": len(calls), "terminal": terminal})
         if terminal:
             verification_ok = result.success
             terminal_type = "TASK_COMPLETED" if verification_ok else "TASK_FAILED"
-            events.append({"type": terminal_type, "message": reply})
+            events.append({"type": terminal_type, "message": reply, "verified": verification_ok})
             await self.events_bus.publish(terminal_type, {"task_id": conversation_id, "message": reply, "verified": verification_ok})
+        await self.events_bus.publish("assistant.reply", {"task_id": conversation_id, "reply": reply, "pending": len(calls), "terminal": terminal})
         return {"tool": call.name, "result": result.model_dump(), "reply": reply, "events": events}
 
     async def _execute(self, call: ToolCall, events: list[dict[str, Any]], *, context: dict[str, Any] | None = None, conversation_id: str | None = None, approval_token: str | None = None, step: int = 0) -> ToolResult:
@@ -234,31 +251,12 @@ class AgentRuntime:
                 return ToolResult(tool=call.name, success=False, output=None, error=error)
             before_state = dict((context or {}).get("screen_state") or {})
             result = await tool.run(gated.arguments)
-            provider_evidence = result.output if isinstance(result.output, dict) else {}
-            after_state = dict((context or {}).get("screen_state_after") or {})
+            after_state = self._fresh_observation(result, context or {})
             if call.name.startswith("device_") and not after_state:
                 after_state = dict((context or {}).get("screen_state") or {})
-            predicate = self.action_verifier.verify(gated, result, before=before_state, after=after_state, provider=provider_evidence)
-            events.append({
-                "type": "VERIFICATION",
-                "action_id": action_id,
-                "tool": call.name,
-                "verified": predicate.ok,
-                "predicate": predicate.predicate,
-                "confidence": predicate.confidence,
-                "evidence": list(predicate.evidence),
-                "reason": predicate.reason,
-            })
-            await self.events_bus.publish("VERIFICATION", {
-                "task_id": conversation_id,
-                "action_id": action_id,
-                "tool": call.name,
-                "verified": predicate.ok,
-                "predicate": predicate.predicate,
-                "confidence": predicate.confidence,
-                "evidence": list(predicate.evidence),
-                "reason": predicate.reason,
-            })
+            predicate = self.action_verifier.verify(gated, result, before=before_state, after=after_state, provider=result.output if isinstance(result.output, dict) else {})
+            events.append({"type": "VERIFICATION", "action_id": action_id, "tool": call.name, "verified": predicate.ok, "predicate": predicate.predicate, "confidence": predicate.confidence, "evidence": list(predicate.evidence), "reason": predicate.reason})
+            await self.events_bus.publish("VERIFICATION", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "verified": predicate.ok, "predicate": predicate.predicate, "confidence": predicate.confidence, "evidence": list(predicate.evidence), "reason": predicate.reason})
             if not predicate.ok:
                 if live:
                     live.action_finished(action_id, False)
