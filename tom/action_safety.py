@@ -14,7 +14,12 @@ class PreconditionResult:
 
 
 class ActionPreconditionChecker:
-    """Fail-closed checks before an action reaches a real device/provider."""
+    """Fail-closed checks before an action reaches a real device/provider.
+
+    A transport ACK or a changed screenshot is never treated as task success.
+    Device actions that can change state must carry an explicit, grounded
+    success predicate so ActionSpecificVerifier can verify the postcondition.
+    """
 
     REQUIRED_ARGUMENTS: ClassVar[dict[str, tuple[str, ...]]] = {
         "device_tap_node": ("node_id",),
@@ -28,10 +33,19 @@ class ActionPreconditionChecker:
 
     ALTERNATIVE_ARGUMENTS: ClassVar[dict[str, tuple[tuple[str, ...], ...]]] = {
         "device_create_calendar_event": (("title", "start_time"), ("title", "start_millis", "end_millis")),
-        # UPI may arrive either as a fully formed intent URI or as structured
-        # payee/amount fields that a trusted adapter can normalize.
         "device_upi_payment": (("intent_uri",), ("pa", "pn", "am")),
     }
+
+    # These actions must prove their intended postcondition. For reversible
+    # navigation we allow an explicit navigation event as the predicate.
+    PREDICATE_REQUIRED: ClassVar[frozenset[str]] = frozenset({
+        "device_open_app", "device_open_url", "device_tap", "device_tap_node",
+        "device_set_text", "device_search_google", "device_send_message",
+        "device_send_email", "device_create_calendar_event", "device_upi_payment",
+        "device_call", "device_video_call", "device_form_submit", "device_upload",
+        "device_download", "device_select", "device_long_press", "device_scroll",
+        "device_swipe", "device_back", "device_home", "device_recents",
+    })
 
     CONSEQUENTIAL: ClassVar[frozenset[Risk]] = frozenset({Risk.HIGH, Risk.CRITICAL})
 
@@ -47,9 +61,14 @@ class ActionPreconditionChecker:
             expected = " or ".join(" + ".join(group) for group in alternatives)
             return PreconditionResult(False, f"missing required arguments: {expected}")
 
+        if call.name in self.PREDICATE_REQUIRED:
+            predicate = args.get("success_predicate") or args.get("expected")
+            if not isinstance(predicate, dict) or not predicate:
+                return PreconditionResult(False, "grounded success_predicate required; re-ground before acting")
+
         state = observed_state or {}
         expected_package = str(args.get("expected_package", "")).strip()
-        current_package = str(state.get("package_name", "")).strip()
+        current_package = str(state.get("package_name", state.get("foreground_package", ""))).strip()
         if expected_package and current_package and expected_package != current_package:
             return PreconditionResult(False, "screen package changed; re-observation required")
         expected_fingerprint = str(args.get("expected_fingerprint", "")).strip()
