@@ -111,7 +111,7 @@ def verify_universal(
             return False, 0.0, f"publish state is {state}", ("publish_state",)
         return False, 0.0, "publish success evidence not confirmed", ()
 
-    if kind in {"upi", "device_upi_payment", "payment", "device_payment"}:
+    if kind in {"upi", "upi_payment", "device_upi_payment", "payment", "device_payment"}:
         provider = _norm(observation.get("payment_provider", observation.get("provider")))
         amount = observation.get("payment_amount", observation.get("amount"))
         recipient = _norm(observation.get("payment_recipient", observation.get("recipient")))
