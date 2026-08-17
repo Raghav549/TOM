@@ -1,5 +1,7 @@
 package com.tom.device.bridge
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.util.Log
 import com.tom.device.TomAccessibilityService
 import com.tom.device.TomActionExecutor
@@ -41,6 +43,23 @@ class TomBridgeRuntime(
 
     override fun onConnected() {
         TomLiveActivityStore.add("transport", "Connected", "Secure device channel is live")
+        sendCapabilities()
+    }
+
+    private fun sendCapabilities() {
+        val audio = service.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val camera = service.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        val phone = service.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+        sendEnvelope("capability_state", JSONObject().apply {
+            put("accessibility", "available")
+            put("screen_capture", "available")
+            put("microphone", if (audio) "available" else "needs_permission")
+            put("camera", if (camera) "available" else "needs_permission")
+            put("phone", if (phone) "available" else "needs_permission")
+            put("notification_access", "reported_by_notification_listener")
+            put("browser", "available_via_android_ui")
+            put("reason", "runtime capability snapshot")
+        })
     }
 
     override fun onText(message: String) {
@@ -81,9 +100,10 @@ class TomBridgeRuntime(
             "TASK_FAILED", "task.failed" -> "Task failed"
             "action.started", "action.requested", "ACTION" -> "Working"
             "verification.started", "VERIFICATION", "OBSERVATION" -> "Checking"
+            "notification.analyzed" -> "Notification checked"
             else -> type.replace('_', ' ').replace('.', ' ')
         }
-        val detail = data.optString("message", data.optString("reply", data.optString("tool", "")))
+        val detail = data.optString("message", data.optString("reply", data.optString("tool", data.optString("voice_text", ""))))
         val voiceText = data.optString("voice_text", "")
         TomLiveActivityStore.add("task", title, detail, type == "TASK_FAILED" || type == "task.failed")
         if (voiceText.isNotBlank()) commentary.speak(voiceText, data.optString("language").takeIf { it.isNotBlank() })
@@ -210,6 +230,6 @@ class TomBridgeRuntime(
     }
 
     companion object {
-        private val CONSEQUENT_ACTIONS = setOf("send_message", "send_email", "send_sms", "send_form", "purchase", "payment", "book", "cancel_booking", "delete", "account_change", "publish", "share_sensitive_data", "compose_email", "compose_sms", "create_calendar_event")
+        private val CONSEQUENT_ACTIONS = setOf("send_message", "send_email", "send_sms", "send_form", "purchase", "payment", "book", "cancel_booking", "delete", "account_change", "publish", "share_sensitive_data", "compose_email", "compose_sms", "create_calendar_event", "call", "video_call")
     }
 }
