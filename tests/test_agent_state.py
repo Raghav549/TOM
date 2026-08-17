@@ -20,7 +20,11 @@ def test_precondition_rejects_stale_screen():
     call = ToolCall(
         name="device_open_url",
         risk=Risk.READ,
-        arguments={"url": "https://example.com", "expected_fingerprint": "old"},
+        arguments={
+            "url": "https://example.com",
+            "expected_fingerprint": "old",
+            "success_predicate": {"host": "example.com", "loaded": True},
+        },
     )
     result = checker.check(call, observed_state={"fingerprint": "new"})
     assert not result.ok
@@ -35,27 +39,43 @@ def test_precondition_rejects_missing_consequential_argument():
     assert "message" in result.reason
 
 
-def test_upi_accepts_structured_payload_or_intent_uri():
+def test_upi_accepts_structured_payload_or_intent_uri_with_predicate():
     checker = ActionPreconditionChecker()
     structured = ToolCall(
         name="device_upi_payment",
         risk=Risk.CRITICAL,
-        arguments={"pa": "merchant@upi", "pn": "Merchant", "am": "100", "approved": True},
+        arguments={
+            "pa": "merchant@upi",
+            "pn": "Merchant",
+            "am": "100",
+            "approved": True,
+            "success_predicate": {"provider_status": "SUCCESS"},
+        },
     )
     intent = ToolCall(
         name="device_upi_payment",
         risk=Risk.CRITICAL,
-        arguments={"intent_uri": "upi://pay?pa=merchant@upi&am=100", "approved": True},
+        arguments={
+            "intent_uri": "upi://pay?pa=merchant@upi&am=100",
+            "approved": True,
+            "success_predicate": {"provider_status": "SUCCESS"},
+        },
     )
     assert checker.check(structured).ok
     assert checker.check(intent).ok
 
 
-def test_calendar_accepts_millis_payload():
+def test_calendar_accepts_millis_payload_with_predicate():
     checker = ActionPreconditionChecker()
     call = ToolCall(
         name="device_create_calendar_event",
         risk=Risk.HIGH,
-        arguments={"title": "Meeting", "start_millis": 1000, "end_millis": 2000, "approved": True},
+        arguments={
+            "title": "Meeting",
+            "start_millis": 1000,
+            "end_millis": 2000,
+            "approved": True,
+            "success_predicate": {"event_title": "Meeting"},
+        },
     )
     assert checker.check(call).ok
