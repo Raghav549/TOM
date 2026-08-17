@@ -40,7 +40,16 @@ def test_video_call_requires_connected_state() -> None:
     verifier = ActionSpecificVerifier()
     ringing = verifier.verify(call("video_call", {"contact": "Muskan"}), ok_result("video_call"), after={"video_call_state": "ringing", "contact": "Muskan"})
     assert ringing.ok is False
-    connected = verifier.verify(call("video_call", {"contact": "Muskan"}), ok_result("video_call"), after={"video_call_state": "connected", "connected_contact": "Muskan"})
+    connected = verifier.verify(
+        call("video_call", {"contact": "Muskan"}),
+        ok_result("video_call"),
+        after={
+            "video_call_state": "connected",
+            "connected_contact": "Muskan",
+            "video_active": True,
+            "audio_active": True,
+        },
+    )
     assert connected.ok is True
 
 
@@ -52,5 +61,16 @@ def test_upi_pending_is_never_success() -> None:
 
 def test_upi_success_requires_terminal_evidence() -> None:
     verifier = ActionSpecificVerifier()
-    result = verifier.verify(call("upi_payment", {"amount": "100", "recipient": "merchant@upi"}), ok_result("upi_payment"), after={"payment_state": "success", "transaction_id": "TXN1", "evidence": [{"kind": "provider", "value": "success", "authoritative": True, "confidence": 0.99}]})
+    result = verifier.verify(
+        call("upi_payment", {"amount": "100", "recipient": "merchant@upi", "provider": "com.google.android.apps.nbu.paisa.user"}),
+        ok_result("upi_payment"),
+        after={
+            "payment_state": "success",
+            "transaction_id": "TXN1",
+            "payment_provider": "com.google.android.apps.nbu.paisa.user",
+            "payment_amount": "100",
+            "payment_recipient": "merchant@upi",
+            "evidence": [{"kind": "provider", "value": "success", "authoritative": True, "confidence": 0.99}],
+        },
+    )
     assert result.ok is True
