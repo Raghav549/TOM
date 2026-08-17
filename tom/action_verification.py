@@ -104,6 +104,57 @@ class ActionSpecificVerifier:
         negative = any(token in blob for token in ("failed to send", "couldn't send", "could not send", "not sent", "send failed"))
         return positive and not negative, ("positive_send_confirmation",) if positive and not negative else ()
 
+    @staticmethod
+    def _upi_state(observation: Mapping[str, Any]) -> str:
+        """Normalize payment state so pending can never be mislabeled as success."""
+        for key in ("provider_payment_state", "payment_state", "provider_status", "status", "transaction_status"):
+            value = observation.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip().casefold()
+        return ""
+
+    def _verify_upi(self, call: ToolCall, expected: Mapping[str, Any], observation: Mapping[str, Any]) -> PredicateResult:
+        """Use a terminal/provider-aware UPI gate before the generic verifier.
+
+        A transport/tool ACK is not payment success. Pending/processing states are
+        explicitly non-terminal, and terminal success requires transaction/provider
+        evidence. This keeps the predicate name truthful as well as the boolean.
+        """
+        state = self._upi_state(observation)
+        transaction_id = str(
+            observation.get("transaction_id", observation.get("utr", observation.get("txn_id", "")))
+        ).strip()
+        evidence = observation.get("evidence", ())
+        has_authoritative_success = False
+        if isinstance(evidence, (list, tuple)):
+            for item in evidence:
+                if not isinstance(item, Mapping):
+                    continue
+                value = str(item.get("value", "")).strip().casefold()
+                try:
+                    confidence = float(item.get("confidence", 0.0))
+                except (TypeError, ValueError):
+                    confidence = 0.0
+                if item.get("authoritative") is True and confidence >= 0.90 and value in {"success", "succeeded", "completed", "paid"}:
+                    has_authoritative_success = True
+                    break
+
+        if state in {"pending", "processing", "queued", "initiated", "requires_action", "authorization_required"}:
+            return PredicateResult(False, "upi.pending", 0.99, ("payment_state",), f"payment remains {state}")
+        if state in {"failed", "declined", "cancelled", "canceled", "error", "reversed"}:
+            return PredicateResult(False, "upi.provider_failure", 1.0, ("payment_state",), f"payment state is {state}")
+        if state in {"success", "succeeded", "completed", "paid"} and not (transaction_id or has_authoritative_success):
+            return PredicateResult(False, "upi.provider_evidence", 0.99, ("payment_state",), "terminal success state lacks transaction/provider evidence")
+
+        hard = verify_universal(call.name, expected, observation)
+        if hard is not None:
+            ok, confidence, reason, hard_evidence = hard
+            if ok:
+                return PredicateResult(True, "upi.provider_success", confidence, hard_evidence, reason)
+            return PredicateResult(False, "upi.provider_evidence", confidence, hard_evidence, reason)
+
+        return PredicateResult(False, "upi.provider_evidence", 0.0, (), "authoritative payment evidence not confirmed")
+
     def verify(self, call: ToolCall, result: ToolResult, *, before: Mapping[str, Any] | None = None, after: Mapping[str, Any] | None = None, provider: Mapping[str, Any] | None = None) -> PredicateResult:
         if not result.success:
             return PredicateResult(False, "tool_success", 0.0, (), result.error or "tool failed")
@@ -146,6 +197,11 @@ class ActionSpecificVerifier:
                 normalized_after["event_id"] = provider_data["event_id"]
             if provider_data.get("provider_event_id"):
                 normalized_after["event_id"] = provider_data["provider_event_id"]
+
+        # UPI is intentionally stricter than generic action verification: a
+        # pending provider response can never be reported as provider_success.
+        if kind == "upi":
+            return self._verify_upi(call, expected, normalized_after)
 
         if kind in {"send", "send_message"}:
             ui_ok, ui_evidence = self._ui_send_evidence(normalized_after)
