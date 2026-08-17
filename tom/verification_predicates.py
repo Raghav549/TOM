@@ -89,7 +89,7 @@ class SuccessPredicateEngine:
             ok = e["expected_node_id"] in node_ids or selected == e["expected_node_id"]
         else:
             ok = bool(target) and (target.lower() in selected.lower() or _contains_any(visible, [target]))
-        if not ok and e.get("expected_state")):
+        if not ok and e.get("expected_state"):
             ok = self._state_match(e.get("expected_state", {}), a)
         return PredicateResult(ok, 0.9 if ok else 0.0, "expected_ui_target_or_state", f"target={target}", (selected,))
 
