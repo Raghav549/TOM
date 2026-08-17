@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from .models import ToolCall, ToolResult
-from .success_predicates import SuccessPredicateEngine
+from .strict_success_predicates import StrictSuccessPredicateEngine
 from .universal_action_contract import ActionType, build_action
 from .universal_verifier import verify_universal
 
@@ -30,7 +30,7 @@ class ActionSpecificVerifier:
     """Single verification facade shared by runtime, Android and browser actions."""
 
     def __init__(self) -> None:
-        self._engine = SuccessPredicateEngine()
+        self._engine = StrictSuccessPredicateEngine()
 
     @staticmethod
     def _normalize_observation(observation: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -106,7 +106,6 @@ class ActionSpecificVerifier:
 
     @staticmethod
     def _upi_state(observation: Mapping[str, Any]) -> str:
-        """Normalize payment state so pending can never be mislabeled as success."""
         for key in ("provider_payment_state", "payment_state", "provider_status", "status", "transaction_status"):
             value = observation.get(key)
             if value is not None and str(value).strip():
@@ -114,16 +113,8 @@ class ActionSpecificVerifier:
         return ""
 
     def _verify_upi(self, call: ToolCall, expected: Mapping[str, Any], observation: Mapping[str, Any]) -> PredicateResult:
-        """Use a terminal/provider-aware UPI gate before the generic verifier.
-
-        A transport/tool ACK is not payment success. Pending/processing states are
-        explicitly non-terminal, and terminal success requires transaction/provider
-        evidence. This keeps the predicate name truthful as well as the boolean.
-        """
         state = self._upi_state(observation)
-        transaction_id = str(
-            observation.get("transaction_id", observation.get("utr", observation.get("txn_id", "")))
-        ).strip()
+        transaction_id = str(observation.get("transaction_id", observation.get("utr", observation.get("txn_id", "")))).strip()
         evidence = observation.get("evidence", ())
         has_authoritative_success = False
         if isinstance(evidence, (list, tuple)):
@@ -138,21 +129,18 @@ class ActionSpecificVerifier:
                 if item.get("authoritative") is True and confidence >= 0.90 and value in {"success", "succeeded", "completed", "paid"}:
                     has_authoritative_success = True
                     break
-
         if state in {"pending", "processing", "queued", "initiated", "requires_action", "authorization_required"}:
             return PredicateResult(False, "upi.pending", 0.99, ("payment_state",), f"payment remains {state}")
         if state in {"failed", "declined", "cancelled", "canceled", "error", "reversed"}:
             return PredicateResult(False, "upi.provider_failure", 1.0, ("payment_state",), f"payment state is {state}")
         if state in {"success", "succeeded", "completed", "paid"} and not (transaction_id or has_authoritative_success):
             return PredicateResult(False, "upi.provider_evidence", 0.99, ("payment_state",), "terminal success state lacks transaction/provider evidence")
-
         hard = verify_universal(call.name, expected, observation)
         if hard is not None:
             ok, confidence, reason, hard_evidence = hard
             if ok:
                 return PredicateResult(True, "upi.provider_success", confidence, hard_evidence, reason)
             return PredicateResult(False, "upi.provider_evidence", confidence, hard_evidence, reason)
-
         return PredicateResult(False, "upi.provider_evidence", 0.0, (), "authoritative payment evidence not confirmed")
 
     def verify(self, call: ToolCall, result: ToolResult, *, before: Mapping[str, Any] | None = None, after: Mapping[str, Any] | None = None, provider: Mapping[str, Any] | None = None) -> PredicateResult:
@@ -166,7 +154,6 @@ class ActionSpecificVerifier:
                 return PredicateResult(True, str(device_verification.get("predicate") or call.name), float(device_verification.get("confidence", 1.0)), tuple(str(x) for x in device_verification.get("evidence", [])), str(device_verification.get("reason", "authoritative device verification passed")))
             if status in {"failed", "unknown"}:
                 return PredicateResult(False, str(device_verification.get("predicate") or call.name), float(device_verification.get("confidence", 0.0)), tuple(str(x) for x in device_verification.get("evidence", [])), str(device_verification.get("reason", f"device verification {status}")))
-
         kind, expected = self._legacy_expected(call)
         try:
             contract_type = ActionType(call.name)
@@ -175,11 +162,9 @@ class ActionSpecificVerifier:
             kind = contract_type.value
         except ValueError:
             pass
-
         normalized_after = self._normalize_observation(after)
         if kind == "search":
             self._infer_search_loaded(normalized_after, str(expected.get("query", "")))
-
         if provider_data:
             normalized_after.setdefault("evidence", [])
             if isinstance(normalized_after["evidence"], list):
@@ -197,40 +182,29 @@ class ActionSpecificVerifier:
                 normalized_after["event_id"] = provider_data["event_id"]
             if provider_data.get("provider_event_id"):
                 normalized_after["event_id"] = provider_data["provider_event_id"]
-
-        # UPI is intentionally stricter than generic action verification: a
-        # pending provider response can never be reported as provider_success.
         if kind == "upi":
             return self._verify_upi(call, expected, normalized_after)
-
         if kind in {"send", "send_message"}:
             ui_ok, ui_evidence = self._ui_send_evidence(normalized_after)
             if ui_ok:
                 return PredicateResult(True, "universal.send_message", 0.97, ui_evidence, "positive send confirmation visible")
-
         hard = verify_universal(call.name, expected, normalized_after)
         if hard is not None:
             ok, confidence, reason, evidence = hard
-            if kind == "upi":
-                state = str(normalized_after.get("provider_payment_state", normalized_after.get("payment_state", ""))).casefold()
-                predicate = "upi.provider_success" if ok else ("upi.pending" if state == "pending" else "upi.provider_evidence")
-            elif kind == "create_calendar_event":
+            if kind == "create_calendar_event":
                 predicate = "calendar.event_created"
             elif kind in {"send", "send_message"}:
                 predicate = "universal.send_message"
             else:
                 predicate = f"universal.{call.name}"
             return PredicateResult(ok, predicate, confidence, evidence, reason)
-
         if kind == "create_calendar_event":
             event_id = str(normalized_after.get("event_id", "")).strip()
             if event_id:
                 return PredicateResult(True, "calendar.event_created", 0.99, ("event_id",), "calendar provider event id confirmed")
             return PredicateResult(False, "calendar.event_created", 0.0, (), "calendar creation is not confirmed")
-
         if kind == call.name and not expected:
             return PredicateResult(True, "tool_success", 0.75, ("tool_result",), "tool returned a successful result")
-
         verification = self._engine.verify({"kind": kind, "success_predicate": expected}, normalized_after)
         predicate = {"open_app": "open_app.expected_package", "tap": "tap.expected_ui_target", "tap_node": "tap.expected_ui_target", "search": "search.expected_result_state", "type": "set_text.expected_value", "send": "universal.send_message", "send_message": "universal.send_message", "create_calendar_event": "calendar.event_created", "upi": "upi.provider_success"}.get(kind, "tool_success")
         if kind == "open_app":
