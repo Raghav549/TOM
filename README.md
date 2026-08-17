@@ -9,6 +9,7 @@
 - Provider-neutral APIs and replaceable infrastructure.
 - No fake capabilities: adapters report unavailable capabilities instead of pretending.
 - Core, Android, browser, voice and frontend communicate through correlated task/event streams.
+- Action success is effect-verified, not inferred from an ACK or generic screen change.
 
 ## Runtime layers
 `tom/core` orchestrates perception → planning → tool execution → verification.
@@ -37,6 +38,9 @@ For the production path and release checklist see `docs/PRODUCTION.md`.
 Every tool declares a risk class. Read-only tools can run automatically when permitted. External side effects such as sending messages, purchases, account changes, deletion, or device control require an approval token unless the user explicitly configured a lower-risk policy.
 
 The Android bridge uses challenge/HMAC authentication, sequence checks and task/action correlation. Post-action state must be observed before TOM treats an action as verified.
+
+## Research basis
+The verifier/recovery architecture is informed by V-Droid, VeriSafe Agent, VeriGUI, AndroidWorld, OSWorld, Qwen UI-Agent and Qwen-CUA. See `docs/VERIFIER_RESEARCH_2026.md` for the engineering mapping.
 
 ## License
 Apache-2.0. See `LICENSE`.
