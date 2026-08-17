@@ -7,6 +7,24 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 class TomNotificationListener : NotificationListenerService() {
+    private var telephonyObserver: TomTelephonyObserver? = null
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        telephonyObserver = TomTelephonyObserver(this).also { it.start() }
+        TomBridgeRegistry.publishObservation(JSONObject().apply {
+            put("kind", "notification_listener")
+            put("state", "connected")
+            put("source", "android_notification_listener")
+        }.toString())
+    }
+
+    override fun onListenerDisconnected() {
+        telephonyObserver?.stop()
+        telephonyObserver = null
+        super.onListenerDisconnected()
+    }
+
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val notification = sbn.notification
         val extras = notification.extras
