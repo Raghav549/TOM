@@ -144,9 +144,9 @@ class ProviderPaymentPredicate(SuccessPredicate):
             evidence.append(PredicateEvidence("transaction", "provider transaction id observed", 1.2))
         if negative:
             return PredicateResult(False, 0.0, "payment success contradicted by provider/payment state", tuple(evidence))
-        if positive and provider and transaction:
-            return PredicateResult(True, 1.0, "provider, successful payment state, and transaction evidence observed", tuple(evidence))
-        return PredicateResult(False, 0.0, "payment success is not proven; provider and transaction evidence required", tuple(evidence))
+        if positive and transaction:
+            return PredicateResult(True, 1.0 if provider else 0.95, "successful payment state and terminal transaction evidence observed", tuple(evidence))
+        return PredicateResult(False, 0.0, "payment success is not proven; terminal provider transaction evidence required", tuple(evidence))
 
 
 @dataclass(frozen=True)
