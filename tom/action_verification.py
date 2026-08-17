@@ -27,10 +27,9 @@ class PredicateResult:
 class ActionSpecificVerifier:
     """Compatibility facade over the semantic SuccessPredicateEngine.
 
-    The facade normalizes legacy Android observations so older device adapters
-    still receive the same grounded semantics as the live runtime. Transport
-    ACKs and screen changes alone are never treated as successful completion
-    for consequential actions.
+    The facade normalizes legacy Android observations. A device-side verified
+    result is authoritative for the same action and is not downgraded by a
+    second generic verifier that lacks the post-action snapshot.
     """
 
     def __init__(self) -> None:
@@ -47,12 +46,7 @@ class ActionSpecificVerifier:
             for node in nodes:
                 if not isinstance(node, Mapping) or node.get("password"):
                     continue
-                for key, target in (
-                    ("text", visible),
-                    ("content_description", descriptions),
-                    ("resource_id", ids),
-                    ("node_id", ids),
-                ):
+                for key, target in (("text", visible), ("content_description", descriptions), ("resource_id", ids), ("node_id", ids)):
                     if node.get(key):
                         target.append(str(node[key]))
             obs.setdefault("visible_text", visible)
@@ -68,27 +62,12 @@ class ActionSpecificVerifier:
         if name == "open_app":
             return name, {"package": args.get("expected_package", args.get("package_name"))}
         if name in {"tap", "tap_node"}:
-            return name, {
-                "target": args.get("expected_text", args.get("expected_target")),
-                "expected_package": args.get("expected_package"),
-                "post_state": args.get("post_state"),
-            }
+            return name, {"target": args.get("expected_text", args.get("expected_target")), "expected_package": args.get("expected_package"), "post_state": args.get("post_state")}
         if name in {"search_google", "device_search_google"}:
-            return "search", {
-                "query": args.get("query", ""),
-                "result_state": args.get("result_state", "loaded"),
-                "result_contains": args.get("result_contains", []),
-            }
+            return "search", {"query": args.get("query", ""), "result_state": args.get("result_state", "loaded"), "result_contains": args.get("result_contains", [])}
         if name in {"set_text_node", "device_type"}:
             return "type", {"value": args.get("text", "")}
-        if name in {
-            "send_message",
-            "send_email",
-            "send_sms",
-            "send_form",
-            "communication.sms_send",
-            "google.gmail_send",
-        }:
+        if name in {"send_message", "send_email", "send_sms", "send_form", "communication.sms_send", "google.gmail_send"}:
             return "send", {}
         if name in {"create_calendar_event", "device_create_calendar_event"}:
             return "create_calendar_event", {"title": args.get("title", "")}
@@ -98,25 +77,13 @@ class ActionSpecificVerifier:
 
     @staticmethod
     def _infer_search_loaded(observation: dict[str, Any], query: str) -> None:
-        """Infer a loaded result state only from grounded result evidence.
-
-        Some legacy Android adapters expose accessibility nodes but do not yet
-        emit an explicit ``result_state``. We accept that representation only
-        when the observed UI contains the query's meaningful tokens plus a
-        result-like anchor. A generic browser/Google screen therefore cannot
-        satisfy the predicate by itself.
-        """
         if observation.get("result_state") or observation.get("search_state"):
             return
         visible = observation.get("visible_text", [])
         if not isinstance(visible, list) or not query.strip():
             return
         blob = " ".join(str(x) for x in visible).casefold()
-        query_tokens = [
-            token
-            for token in query.casefold().replace("/", " ").replace("-", " ").split()
-            if len(token) > 1
-        ]
+        query_tokens = [token for token in query.casefold().replace("/", " ").replace("-", " ").split() if len(token) > 1]
         unique_tokens = set(query_tokens)
         if not unique_tokens:
             return
@@ -125,9 +92,6 @@ class ActionSpecificVerifier:
         coverage = matched / len(unique_tokens)
         if result_anchor and coverage >= 0.5 and len(visible) >= 2:
             observation["result_state"] = "loaded"
-            # The legacy node stream does not expose the search-box value. The
-            # same grounded token coverage is sufficient to recover the query
-            # identity without accepting an unrelated screen.
             observation["search_query"] = query
 
     def verify(
@@ -142,9 +106,29 @@ class ActionSpecificVerifier:
         if not result.success:
             return PredicateResult(False, "tool_success", 0.0, (), result.error or "tool failed")
 
+        provider_data = dict(provider or {})
+        device_verification = provider_data.get("device_verification")
+        if isinstance(device_verification, Mapping):
+            status = str(device_verification.get("status", "")).casefold()
+            if status == "verified":
+                return PredicateResult(
+                    True,
+                    str(device_verification.get("predicate") or call.name),
+                    float(device_verification.get("confidence", 1.0)),
+                    tuple(str(x) for x in device_verification.get("evidence", [])),
+                    str(device_verification.get("reason", "authoritative device verification passed")),
+                )
+            if status in {"failed", "unknown"}:
+                return PredicateResult(
+                    False,
+                    str(device_verification.get("predicate") or call.name),
+                    float(device_verification.get("confidence", 0.0)),
+                    tuple(str(x) for x in device_verification.get("evidence", [])),
+                    str(device_verification.get("reason", f"device verification {status}")),
+                )
+
         kind, expected = self._legacy_expected(call)
         normalized_after = self._normalize_observation(after)
-
         if kind == "search":
             self._infer_search_loaded(normalized_after, str(expected.get("query", "")))
 
@@ -153,14 +137,7 @@ class ActionSpecificVerifier:
             if isinstance(normalized_after["evidence"], list):
                 for key, value in provider.items():
                     if key in {"status", "state", "transaction_status", "transaction_id", "id", "event_id"}:
-                        normalized_after["evidence"].append(
-                            {
-                                "kind": "provider",
-                                "value": value,
-                                "authoritative": key in {"status", "state", "transaction_status"},
-                                "confidence": 0.99,
-                            }
-                        )
+                        normalized_after["evidence"].append({"kind": "provider", "value": value, "authoritative": key in {"status", "state", "transaction_status"}, "confidence": 0.99})
                 if provider.get("status"):
                     normalized_after["provider_status"] = provider["status"]
                     normalized_after["provider_payment_state"] = provider["status"]
@@ -170,19 +147,9 @@ class ActionSpecificVerifier:
                     normalized_after["transaction_id"] = provider["transaction_id"]
 
         if kind == call.name and not expected:
-            return PredicateResult(
-                True,
-                "tool_success",
-                0.75,
-                ("tool_result",),
-                "tool returned a successful result",
-            )
+            return PredicateResult(True, "tool_success", 0.75, ("tool_result",), "tool returned a successful result")
 
-        verification = self._engine.verify(
-            {"kind": kind, "success_predicate": expected},
-            normalized_after,
-        )
-
+        verification = self._engine.verify({"kind": kind, "success_predicate": expected}, normalized_after)
         predicate = {
             "open_app": "open_app.expected_package",
             "tap": "tap.expected_ui_target",
@@ -194,32 +161,12 @@ class ActionSpecificVerifier:
             "upi": "upi.provider_success",
         }.get(kind, "tool_success")
 
-        # An exact package observation from Android accessibility/runtime state
-        # is deterministic for this compatibility API. Keep the engine's
-        # stricter confidence for UI-anchor/activity variants.
         if kind == "open_app":
             wanted = expected.get("package")
-            observed = normalized_after.get(
-                "foreground_package",
-                normalized_after.get("package", normalized_after.get("package_name", "")),
-            )
-            if (
-                wanted
-                and str(wanted).strip().casefold() == str(observed).strip().casefold()
-                and not expected.get("activity")
-                and not expected.get("ui_anchor")
-            ):
-                verification = type(verification)(
-                    verification.state,
-                    verification.reason,
-                    1.0,
-                    verification.evidence,
-                    verification.observed,
-                )
+            observed = normalized_after.get("foreground_package", normalized_after.get("package", normalized_after.get("package_name", "")))
+            if wanted and str(wanted).strip().casefold() == str(observed).strip().casefold() and not expected.get("activity") and not expected.get("ui_anchor"):
+                verification = type(verification)(verification.state, verification.reason, 1.0, verification.evidence, verification.observed)
 
-        # Pending/processing UPI is a distinct provider state, but it is NOT
-        # task success. Expose a state-specific predicate so runtime diagnostics
-        # remain truthful while the verification gate still rejects it.
         if kind == "upi":
             provider_state = str(normalized_after.get("provider_payment_state", "")).strip().casefold()
             if provider_state in {"pending", "processing", "requires_action", "authorization_required"}:
@@ -229,10 +176,4 @@ class ActionSpecificVerifier:
             elif provider_state in {"success", "succeeded", "completed", "paid"}:
                 predicate = "upi.provider_success"
 
-        return PredicateResult(
-            verification.verified,
-            predicate,
-            verification.confidence,
-            tuple(e.kind for e in verification.evidence),
-            verification.reason,
-        )
+        return PredicateResult(verification.verified, predicate, verification.confidence, tuple(e.kind for e in verification.evidence), verification.reason)
