@@ -1,9 +1,11 @@
 package com.tom.device
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Bundle
@@ -11,6 +13,7 @@ import android.os.SystemClock
 import android.provider.CalendarContract
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -69,8 +72,7 @@ class TomAccessibilityService : AccessibilityService() {
 
     fun setTextNode(nodeId: String, text: String): Boolean = withNode(nodeId) { node ->
         if (!node.isEnabled || !node.isVisibleToUser || !node.isEditable || node.isPassword) return@withNode false
-        val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
-        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) })
     }
 
     fun setTextSemantic(text: String?, description: String?, viewId: String?, value: String): Boolean = withSemanticNode(text, description, viewId) { node ->
@@ -120,6 +122,16 @@ class TomAccessibilityService : AccessibilityService() {
 
     fun openIntentUri(intentUri: String): Boolean {
         val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(intentUri)).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+        if (intent.resolveActivity(packageManager) == null) return false
+        startActivity(intent)
+        return true
+    }
+
+    fun callNumber(number: String): Boolean {
+        val normalized = number.trim()
+        if (normalized.isBlank()) return false
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) != PackageManager.PERMISSION_GRANTED) return false
+        val intent = Intent(Intent.ACTION_CALL, android.net.Uri.parse("tel:${android.net.Uri.encode(normalized)}")).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
         if (intent.resolveActivity(packageManager) == null) return false
         startActivity(intent)
         return true
