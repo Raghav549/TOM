@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <queries>
@@ -13,13 +14,18 @@
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.CALL" />
+        </intent>
     </queries>
 
     <application
         android:allowBackup="false"
         android:label="TOM"
         android:supportsRtl="true">
-
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -28,7 +34,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
         <service
             android:name=".TomAccessibilityService"
             android:exported="false"
@@ -36,11 +41,8 @@
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/tom_accessibility_service" />
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/tom_accessibility_service" />
         </service>
-
         <service
             android:name=".TomNotificationListener"
             android:exported="true"
