@@ -27,10 +27,10 @@ class PredicateResult:
 class ActionSpecificVerifier:
     """Compatibility facade over the semantic SuccessPredicateEngine.
 
-    The facade also normalizes legacy Android observations so older device
-    adapters/tests still receive the same grounded semantics as the live
-    runtime. Transport ACKs and screen changes alone are never treated as
-    successful completion for consequential actions.
+    The facade normalizes legacy Android observations so older device adapters
+    still receive the same grounded semantics as the live runtime. Transport
+    ACKs and screen changes alone are never treated as successful completion
+    for consequential actions.
     """
 
     def __init__(self) -> None:
@@ -112,14 +112,23 @@ class ActionSpecificVerifier:
         if not isinstance(visible, list) or not query.strip():
             return
         blob = " ".join(str(x) for x in visible).casefold()
-        query_tokens = [token for token in query.casefold().replace("/", " ").replace("-", " ").split() if len(token) > 1]
-        if not query_tokens:
+        query_tokens = [
+            token
+            for token in query.casefold().replace("/", " ").replace("-", " ").split()
+            if len(token) > 1
+        ]
+        unique_tokens = set(query_tokens)
+        if not unique_tokens:
             return
-        matched = sum(1 for token in set(query_tokens) if token in blob)
+        matched = sum(1 for token in unique_tokens if token in blob)
         result_anchor = any(anchor in blob for anchor in ("search results", "results", "result"))
-        coverage = matched / len(set(query_tokens))
+        coverage = matched / len(unique_tokens)
         if result_anchor and coverage >= 0.5 and len(visible) >= 2:
             observation["result_state"] = "loaded"
+            # The legacy node stream does not expose the search-box value. The
+            # same grounded token coverage is sufficient to recover the query
+            # identity without accepting an unrelated screen.
+            observation["search_query"] = query
 
     def verify(
         self,
@@ -185,8 +194,8 @@ class ActionSpecificVerifier:
             "upi": "upi.provider_success",
         }.get(kind, "tool_success")
 
-        # An exact package observation from the Android accessibility/runtime
-        # state is deterministic for this compatibility API. Keep the engine's
+        # An exact package observation from Android accessibility/runtime state
+        # is deterministic for this compatibility API. Keep the engine's
         # stricter confidence for UI-anchor/activity variants.
         if kind == "open_app":
             wanted = expected.get("package")
@@ -194,7 +203,12 @@ class ActionSpecificVerifier:
                 "foreground_package",
                 normalized_after.get("package", normalized_after.get("package_name", "")),
             )
-            if wanted and str(wanted).strip().casefold() == str(observed).strip().casefold() and not expected.get("activity") and not expected.get("ui_anchor"):
+            if (
+                wanted
+                and str(wanted).strip().casefold() == str(observed).strip().casefold()
+                and not expected.get("activity")
+                and not expected.get("ui_anchor")
+            ):
                 verification = type(verification)(
                     verification.state,
                     verification.reason,
@@ -203,13 +217,11 @@ class ActionSpecificVerifier:
                     verification.observed,
                 )
 
-        # Pending/processing UPI is a distinct verified observation of the
-        # provider state, but it is deliberately NOT task success. Exposing a
-        # state-specific predicate keeps the runtime and diagnostics truthful.
+        # Pending/processing UPI is a distinct provider state, but it is NOT
+        # task success. Expose a state-specific predicate so runtime diagnostics
+        # remain truthful while the verification gate still rejects it.
         if kind == "upi":
-            provider_state = str(
-                normalized_after.get("provider_payment_state", "")
-            ).strip().casefold()
+            provider_state = str(normalized_after.get("provider_payment_state", "")).strip().casefold()
             if provider_state in {"pending", "processing", "requires_action", "authorization_required"}:
                 predicate = "upi.pending"
             elif provider_state in {"failed", "cancelled", "canceled", "declined"}:
