@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 from .models import ToolCall, ToolResult
 from .success_predicates import SuccessPredicateEngine
+from .universal_action_contract import ActionType, build_action
 from .universal_verifier import verify_universal
 
 
@@ -26,7 +27,7 @@ class PredicateResult:
 
 
 class ActionSpecificVerifier:
-    """Compatibility facade over semantic + universal action predicates."""
+    """Single verification facade shared by runtime, Android and browser actions."""
 
     def __init__(self) -> None:
         self._engine = SuccessPredicateEngine()
@@ -85,8 +86,7 @@ class ActionSpecificVerifier:
             return
         matched = sum(1 for token in unique_tokens if token in blob)
         result_anchor = any(anchor in blob for anchor in ("search results", "results", "result"))
-        coverage = matched / len(unique_tokens)
-        if result_anchor and coverage >= 0.5 and len(visible) >= 2:
+        if result_anchor and matched / len(unique_tokens) >= 0.5 and len(visible) >= 2:
             observation["result_state"] = "loaded"
             observation["search_query"] = query
 
@@ -103,6 +103,14 @@ class ActionSpecificVerifier:
                 return PredicateResult(False, str(device_verification.get("predicate") or call.name), float(device_verification.get("confidence", 0.0)), tuple(str(x) for x in device_verification.get("evidence", [])), str(device_verification.get("reason", f"device verification {status}")))
 
         kind, expected = self._legacy_expected(call)
+        try:
+            contract_type = ActionType(call.name)
+            contract = build_action(str(call.arguments.get("action_id", call.name)), str(call.arguments.get("task_id", "")), contract_type, dict(call.arguments))
+            expected = {**contract.predicate.expected, **expected}
+            kind = contract_type.value
+        except ValueError:
+            pass
+
         normalized_after = self._normalize_observation(after)
         if kind == "search":
             self._infer_search_loaded(normalized_after, str(expected.get("query", "")))
@@ -122,7 +130,6 @@ class ActionSpecificVerifier:
         if hard is not None:
             ok, confidence, reason, evidence = hard
             return PredicateResult(ok, f"universal.{call.name}", confidence, evidence, reason)
-
         if kind == call.name and not expected:
             return PredicateResult(True, "tool_success", 0.75, ("tool_result",), "tool returned a successful result")
         verification = self._engine.verify({"kind": kind, "success_predicate": expected}, normalized_after)
@@ -132,12 +139,4 @@ class ActionSpecificVerifier:
             observed = normalized_after.get("foreground_package", normalized_after.get("package", normalized_after.get("package_name", "")))
             if wanted and str(wanted).strip().casefold() == str(observed).strip().casefold() and not expected.get("activity") and not expected.get("ui_anchor"):
                 verification = type(verification)(verification.state, verification.reason, 1.0, verification.evidence, verification.observed)
-        if kind == "upi":
-            provider_state = str(normalized_after.get("provider_payment_state", "")).strip().casefold()
-            if provider_state in {"pending", "processing", "requires_action", "authorization_required"}:
-                predicate = "upi.pending"
-            elif provider_state in {"failed", "cancelled", "canceled", "declined"}:
-                predicate = "upi.provider_failure"
-            elif provider_state in {"success", "succeeded", "completed", "paid"}:
-                predicate = "upi.provider_success"
         return PredicateResult(verification.verified, predicate, verification.confidence, tuple(e.kind for e in verification.evidence), verification.reason)
