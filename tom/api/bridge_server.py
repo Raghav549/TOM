@@ -10,6 +10,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from tom.device.core_receiver import CoreBridgeReceiver
 from tom.live_events import LiveEvent, LiveEventStream
+from tom.models import Risk, ToolCall
+from tom.notifications.intelligence import NotificationEvent, NotificationIntelligence
 
 
 @dataclass
@@ -21,7 +23,7 @@ class DeviceSession:
 
 
 class AndroidBridgeHub:
-    """Authenticated Android WSS hub with action/verification correlation and task-event fanout."""
+    """Authenticated Android WSS hub with action/effect verification and live fanout."""
 
     def __init__(self, event_stream: LiveEventStream | None = None, core_receiver: CoreBridgeReceiver | None = None) -> None:
         self.sessions: dict[str, DeviceSession] = {}
@@ -29,6 +31,7 @@ class AndroidBridgeHub:
         self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self.event_stream = event_stream
         self.core_receiver = core_receiver
+        self.notification_intelligence = NotificationIntelligence()
         self._event_forwarder: asyncio.Task[None] | None = None
 
     async def _ensure_event_forwarder(self) -> None:
@@ -92,15 +95,45 @@ class AndroidBridgeHub:
         except (RuntimeError, WebSocketDisconnect):
             return False
 
-    async def request_action(self, device_id: str, task_id: str, action: str, arguments: dict[str, Any], approval_token: str | None = None, timeout: float = 45.0) -> dict[str, Any]:
+    async def request_action(
+        self,
+        device_id: str,
+        task_id: str,
+        action: str,
+        arguments: dict[str, Any],
+        approval_token: str | None = None,
+        timeout: float = 45.0,
+    ) -> dict[str, Any]:
         action_id = secrets.token_urlsafe(18)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         key = f"action:{action_id}"
+        action_arguments = dict(arguments)
+        action_arguments["action_id"] = action_id
+        if self.core_receiver:
+            self.core_receiver.register_action(
+                ToolCall(
+                    name=action,
+                    arguments=action_arguments,
+                    risk=Risk.HIGH if action in {"payment", "upi", "send_message", "send_email", "send_sms", "book", "delete", "purchase", "call", "video_call"} else Risk.READ,
+                )
+            )
         async with self.lock:
             self._waiters[key] = future
         await self.emit("action.requested", {"device_id": device_id, "action": action, "action_id": action_id}, task_id=task_id)
-        message = {"type": "action_request", "message_id": secrets.token_urlsafe(12), "sequence": 0, "device_id": device_id, "payload": {"task_id": task_id, "action_id": action_id, "approval_token": approval_token or "", "action": action, "arguments": arguments}}
+        message = {
+            "type": "action_request",
+            "message_id": secrets.token_urlsafe(12),
+            "sequence": 0,
+            "device_id": device_id,
+            "payload": {
+                "task_id": task_id,
+                "action_id": action_id,
+                "approval_token": approval_token or "",
+                "action": action,
+                "arguments": action_arguments,
+            },
+        }
         sent = await self.send(device_id, message)
         if not sent:
             async with self.lock:
@@ -112,7 +145,8 @@ class AndroidBridgeHub:
                 verified = await self.request_verification(device_id, task_id, action_id, timeout=15.0)
                 if verified is None:
                     return {**result, "status": "verification_unknown", "verified": False, "action_id": action_id}
-                return {**result, "status": verified["verification"]["status"], "verified": verified["verification"]["status"] == "verified", "verification": verified["verification"], "observation_id": verified.get("observation_id")}
+                status = verified["verification"]["status"]
+                return {**result, "status": status, "verified": status == "verified", "verification": verified["verification"], "observation_id": verified.get("observation_id")}
             return result
         except asyncio.TimeoutError:
             return {"accepted": False, "status": "action_timeout", "action_id": action_id}
@@ -150,6 +184,25 @@ class AndroidBridgeHub:
             action_id = str(payload.get("action_id", ""))
             if task_id and action_id:
                 await self.emit("observation.received", payload, task_id=task_id)
+            if str(payload.get("kind", "")) == "notification":
+                data = payload.get("data") or payload.get("notification") or payload
+                event = NotificationEvent(
+                    package=str(data.get("package", "")),
+                    title=str(data.get("title", "")),
+                    text=str(data.get("text", "")),
+                    notification_id=str(data.get("id", "")),
+                    extras=data.get("extras") if isinstance(data.get("extras"), dict) else None,
+                )
+                decision = self.notification_intelligence.classify(event)
+                await self.emit("notification.analyzed", {
+                    "device_id": message.get("device_id", ""),
+                    "notification": data,
+                    "priority": decision.priority.value,
+                    "reason": decision.reason,
+                    "suggested_action": decision.suggested_action,
+                    "requires_user_confirmation": decision.requires_user_confirmation,
+                    "voice_text": self._notification_voice(decision.priority.value, event),
+                }, task_id=task_id)
             key = ""
         elif message_type in {"screenshot_chunk", "screenshot_complete"}:
             await self.emit(message_type, payload, task_id=task_id)
@@ -162,6 +215,14 @@ class AndroidBridgeHub:
                 future = self._waiters.get(key)
             if future and not future.done():
                 future.set_result(payload)
+
+    @staticmethod
+    def _notification_voice(priority: str, event: NotificationEvent) -> str:
+        if priority == "urgent":
+            return f"Bhai, ek urgent notification aaya hai — {event.title or 'notification'} — main pehle iska context check karta hoon."
+        if priority == "relevant":
+            return f"Bhai, {event.title or 'ek notification'} aaya hai. Ek sec, main pehle dekh raha hoon kya important hai."
+        return ""
 
     async def resolve_verification(self, result: dict[str, Any]) -> None:
         task_id = str(result.get("task_id") or "")
@@ -210,7 +271,7 @@ def install_android_bridge(app: Any, *, event_stream: LiveEventStream | None = N
                 await websocket.close(code=1008, reason="authentication_failed")
                 return
             session = await live_hub.attach(device_id, websocket)
-            await websocket.send_text(json.dumps({"type": "hello_ack", "device_id": device_id, "sequence": 0, "payload": {"accepted": True, "server_capabilities": ["live_observation", "action_request", "verification", "multimodal_verification", "request_correlation", "core_event_stream", "task_event_replay"]}}, separators=(",", ":")))
+            await websocket.send_text(json.dumps({"type": "hello_ack", "device_id": device_id, "sequence": 0, "payload": {"accepted": True, "server_capabilities": ["live_observation", "action_request", "verification", "multimodal_verification", "action_specific_predicates", "request_correlation", "core_event_stream", "task_event_replay", "notification_intelligence", "call_control", "video_call_intent"]}}, separators=(",", ":")))
             while True:
                 raw = await websocket.receive_text()
                 message = json.loads(raw)
