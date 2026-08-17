@@ -24,11 +24,7 @@ class AndroidDeviceTool:
             raise ValueError("device_id is required")
         task_id = str(arguments.get("task_id") or uuid4())
         approval = arguments.get("approval_token")
-        action_arguments = {
-            key: value
-            for key, value in arguments.items()
-            if key not in {"device_id", "task_id", "approval_token"}
-        }
+        action_arguments = {key: value for key, value in arguments.items() if key not in {"device_id", "task_id", "approval_token"}}
         action_arguments = self._normalize(action_arguments)
         result = await self.hub.request_action(
             device_id=device_id,
@@ -37,16 +33,16 @@ class AndroidDeviceTool:
             arguments=action_arguments,
             approval_token=str(approval) if approval else None,
         )
-        # When multimodal verification is enabled, Core deliberately returns
-        # `verified`/`unknown` instead of pretending transport success is enough.
+        verification = result.get("verification") or {}
         accepted_statuses = {"completed", "verified"}
         if not result.get("accepted") or result.get("status") not in accepted_statuses:
-            return {"ok": False, "action": self.action, "result": result}
+            return {"ok": False, "action": self.action, "result": result, "device_verification": verification}
         return {
             "ok": True,
             "action": self.action,
             "result": result,
-            "verification": result.get("verification"),
+            "verification": verification,
+            "device_verification": verification,
         }
 
     def _normalize(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -84,6 +80,8 @@ def register_android_tools(registry: ToolRegistry, hub: AndroidBridgeHub) -> Non
         ("device_upi_payment", "Open a UPI payment request. Requires exact user confirmation and provider-side verification.", "open_intent_uri", Risk.CRITICAL),
         ("device_compose_email", "Open a real email composer with recipient, subject and body.", "compose_email", Risk.HIGH),
         ("device_compose_sms", "Open a real SMS composer with recipient and body.", "compose_sms", Risk.HIGH),
+        ("device_call", "Place a real phone call after explicit approval and CALL_PHONE permission.", "call", Risk.HIGH),
+        ("device_video_call", "Open a real app-specific video-call intent/deep link after explicit approval.", "video_call", Risk.HIGH),
     ]
     for name, description, action, risk in specs:
         registry.register(AndroidDeviceTool(name, description, action, risk, hub))
