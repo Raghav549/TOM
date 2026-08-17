@@ -18,6 +18,7 @@ from tom.notifications.intelligence import NotificationEvent, NotificationIntell
 class DeviceSession:
     device_id: str
     websocket: WebSocket
+    session_id: str
     last_sequence: int = 0
     connected: bool = True
 
@@ -48,7 +49,7 @@ class AndroidBridgeHub:
                 if not target:
                     continue
                 await self.send(target, {
-                    "type": "task_event",
+                    "type": "TASK_EVENT",
                     "message_id": secrets.token_urlsafe(12),
                     "sequence": event.seq,
                     "device_id": target,
@@ -61,7 +62,7 @@ class AndroidBridgeHub:
         if self.event_stream:
             await self.event_stream.publish(event_type, payload, task_id=task_id)
 
-    async def attach(self, device_id: str, websocket: WebSocket) -> DeviceSession:
+    async def attach(self, device_id: str, websocket: WebSocket, session_id: str) -> DeviceSession:
         await self._ensure_event_forwarder()
         async with self.lock:
             old = self.sessions.get(device_id)
@@ -71,9 +72,9 @@ class AndroidBridgeHub:
                     await old.websocket.close(code=4001, reason="replaced")
                 except RuntimeError:
                     pass
-            session = DeviceSession(device_id=device_id, websocket=websocket)
+            session = DeviceSession(device_id=device_id, websocket=websocket, session_id=session_id)
             self.sessions[device_id] = session
-        await self.emit("device.connected", {"device_id": device_id}, task_id=None)
+        await self.emit("device.connected", {"device_id": device_id, "session_id": session_id}, task_id=None)
         return session
 
     async def detach(self, device_id: str) -> None:
@@ -111,21 +112,20 @@ class AndroidBridgeHub:
         action_arguments = dict(arguments)
         action_arguments["action_id"] = action_id
         if self.core_receiver:
-            self.core_receiver.register_action(
-                ToolCall(
-                    name=action,
-                    arguments=action_arguments,
-                    risk=Risk.HIGH if action in {"payment", "upi", "send_message", "send_email", "send_sms", "book", "delete", "purchase", "call", "video_call"} else Risk.READ,
-                )
-            )
+            self.core_receiver.register_action(ToolCall(
+                name=action,
+                arguments=action_arguments,
+                risk=Risk.HIGH if action in {"payment", "upi", "send_message", "send_email", "send_sms", "book", "delete", "purchase", "call", "video_call"} else Risk.READ,
+            ))
         async with self.lock:
             self._waiters[key] = future
         await self.emit("action.requested", {"device_id": device_id, "action": action, "action_id": action_id}, task_id=task_id)
         message = {
-            "type": "action_request",
+            "type": "ACTION_REQUEST",
             "message_id": secrets.token_urlsafe(12),
             "sequence": 0,
             "device_id": device_id,
+            "session_id": (self.sessions.get(device_id).session_id if self.sessions.get(device_id) else ""),
             "payload": {
                 "task_id": task_id,
                 "action_id": action_id,
@@ -161,8 +161,10 @@ class AndroidBridgeHub:
         async with self.lock:
             self._waiters[key] = future
         await self.emit("verification.started", {"device_id": device_id, "action_id": action_id}, task_id=task_id)
-        await self.send(device_id, {"type": "observation_request", "message_id": secrets.token_urlsafe(12), "sequence": 0, "device_id": device_id, "payload": {"task_id": task_id, "action_id": action_id, "reason": "post_action_verification"}})
-        await self.send(device_id, {"type": "screenshot_request", "message_id": secrets.token_urlsafe(12), "sequence": 0, "device_id": device_id, "payload": {"request_id": secrets.token_urlsafe(12), "task_id": task_id, "action_id": action_id, "reason": "post_action_verification"}})
+        session = self.sessions.get(device_id)
+        session_id = session.session_id if session else ""
+        await self.send(device_id, {"type": "OBSERVATION_REQUEST", "message_id": secrets.token_urlsafe(12), "sequence": 0, "device_id": device_id, "session_id": session_id, "payload": {"task_id": task_id, "action_id": action_id, "reason": "post_action_verification"}})
+        await self.send(device_id, {"type": "SCREENSHOT_REQUEST", "message_id": secrets.token_urlsafe(12), "sequence": 0, "device_id": device_id, "session_id": session_id, "payload": {"request_id": secrets.token_urlsafe(12), "task_id": task_id, "action_id": action_id, "reason": "post_action_verification"}})
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
@@ -173,14 +175,19 @@ class AndroidBridgeHub:
                 self._waiters.pop(key, None)
 
     async def resolve_incoming(self, message: dict[str, Any]) -> None:
-        message_type = str(message.get("type", ""))
+        message_type = str(message.get("type", "")).upper()
         payload = message.get("payload") or {}
         task_id = str(payload.get("task_id") or "") or None
-        if message_type == "action_result":
-            action_id = str(payload.get("action_id", ""))
+        if message_type in {"ACTION_RESULT", "ACTION_ACK"}:
+            action_id = str(payload.get("action_id", message.get("correlation_id", "")))
             key = f"action:{action_id}"
-            await self.emit("action.result", payload, task_id=task_id)
-        elif message_type == "observation":
+            normalized = dict(payload)
+            normalized.setdefault("accepted", bool(payload.get("ok", payload.get("accepted", False))))
+            normalized.setdefault("completed", bool(payload.get("ok", payload.get("completed", False))))
+            normalized.setdefault("status", "completed" if normalized["completed"] else "failed")
+            await self.emit("action.result", normalized, task_id=task_id)
+            payload = normalized
+        elif message_type == "OBSERVATION":
             action_id = str(payload.get("action_id", ""))
             if task_id and action_id:
                 await self.emit("observation.received", payload, task_id=task_id)
@@ -204,11 +211,11 @@ class AndroidBridgeHub:
                     "voice_text": self._notification_voice(decision.priority.value, event),
                 }, task_id=task_id)
             key = ""
-        elif message_type in {"screenshot_chunk", "screenshot_complete"}:
-            await self.emit(message_type, payload, task_id=task_id)
+        elif message_type in {"SCREENSHOT_CHUNK", "SCREENSHOT_COMPLETE"}:
+            await self.emit(message_type.lower(), payload, task_id=task_id)
             key = ""
         else:
-            await self.emit(f"device.{message_type or 'event'}", payload, task_id=task_id)
+            await self.emit(f"device.{message_type.lower() or 'event'}", payload, task_id=task_id)
             key = ""
         if key:
             async with self.lock:
@@ -259,34 +266,38 @@ def install_android_bridge(app: Any, *, event_stream: LiveEventStream | None = N
         session: DeviceSession | None = None
         try:
             challenge = secrets.token_urlsafe(32)
-            await websocket.send_text(json.dumps({"type": "challenge", "challenge": challenge}, separators=(",", ":")))
+            session_id = secrets.token_urlsafe(16)
+            await websocket.send_text(json.dumps({"type": "CHALLENGE", "challenge": challenge, "session_id": session_id}, separators=(",", ":")))
             raw = await websocket.receive_text()
             hello = json.loads(raw)
-            if hello.get("type") != "hello":
+            if str(hello.get("type", "")).upper() != "HELLO":
                 await websocket.close(code=1008, reason="hello_required")
                 return
             payload = hello.get("payload") or {}
-            device_id = str(payload.get("device_id", ""))
-            if not device_id or hello.get("device_id") != device_id or hello.get("challenge") != challenge or not app.state.tom_device_auth.verify_hello(device_id, hello):
+            device_id = str(hello.get("device_id") or payload.get("device_id") or "")
+            proof_message = dict(hello)
+            proof_message["challenge"] = str(payload.get("challenge") or hello.get("challenge") or "")
+            proof_message["proof"] = str(payload.get("proof") or hello.get("proof") or "")
+            if not device_id or proof_message["challenge"] != challenge or not app.state.tom_device_auth.verify_hello(device_id, proof_message):
                 await websocket.close(code=1008, reason="authentication_failed")
                 return
-            session = await live_hub.attach(device_id, websocket)
-            await websocket.send_text(json.dumps({"type": "hello_ack", "device_id": device_id, "sequence": 0, "payload": {"accepted": True, "server_capabilities": ["live_observation", "action_request", "verification", "multimodal_verification", "action_specific_predicates", "request_correlation", "core_event_stream", "task_event_replay", "notification_intelligence", "call_control", "video_call_intent"]}}, separators=(",", ":")))
+            session = await live_hub.attach(device_id, websocket, session_id)
+            await websocket.send_text(json.dumps({"type": "HELLO_ACK", "device_id": device_id, "session_id": session_id, "sequence": 0, "payload": {"authenticated": True, "accepted": True, "server_capabilities": ["live_observation", "action_request", "verification", "multimodal_verification", "action_specific_predicates", "request_correlation", "core_event_stream", "task_event_replay", "notification_intelligence", "call_control", "video_call_intent"]}}, separators=(",", ":")))
             while True:
                 raw = await websocket.receive_text()
                 message = json.loads(raw)
                 sequence = int(message.get("sequence", 0))
                 if sequence <= session.last_sequence:
-                    await websocket.send_text(json.dumps({"type": "error", "payload": {"code": "replay_or_out_of_order", "sequence": sequence}}, separators=(",", ":")))
+                    await websocket.send_text(json.dumps({"type": "ERROR", "payload": {"code": "replay_or_out_of_order", "sequence": sequence}}, separators=(",", ":")))
                     continue
-                if message.get("device_id") != device_id:
+                if message.get("device_id") != device_id or str(message.get("session_id") or "") != session.session_id:
                     await websocket.close(code=1008, reason="device_identity_mismatch")
                     return
                 session.last_sequence = sequence
                 await live_hub.resolve_incoming(message)
                 await _forward_to_core(live_hub, message)
                 if event_stream:
-                    await event_stream.publish("android." + str(message.get("type") or "event"), message.get("payload") or {}, task_id=str((message.get("payload") or {}).get("task_id") or "") or None)
+                    await event_stream.publish("android." + str(message.get("type") or "event").lower(), message.get("payload") or {}, task_id=str((message.get("payload") or {}).get("task_id") or "") or None)
         except WebSocketDisconnect:
             pass
         except (ValueError, json.JSONDecodeError):
