@@ -91,7 +91,7 @@ class ActionSpecificVerifier:
             observation["search_query"] = query
 
     @staticmethod
-    def _ui_send_evidence(observation: Mapping[str, Any]) -> tuple[bool, tuple[str, ...]]:
+    def _ui_send_evidence(observation: Mapping[str, Any], expected: Mapping[str, Any]) -> tuple[bool, tuple[str, ...]]:
         values: list[str] = []
         for key in ("visible_text", "content_descriptions", "notification_text", "page_text"):
             value = observation.get(key, [])
@@ -100,9 +100,13 @@ class ActionSpecificVerifier:
             elif value:
                 values.append(str(value))
         blob = " ".join(values).casefold()
-        positive = any(token in blob for token in ("message sent", "sent successfully", "message delivered", "email sent", "sms sent"))
+        positive = any(token in blob for token in ("message sent", "sent successfully", "message delivered", "email sent", "sms sent", "delivered"))
         negative = any(token in blob for token in ("failed to send", "couldn't send", "could not send", "not sent", "send failed"))
-        return positive and not negative, ("positive_send_confirmation",) if positive and not negative else ()
+        recipient = str(expected.get("recipient", "")).strip().casefold()
+        body = str(expected.get("body", expected.get("message", expected.get("text", "")))).strip().casefold()
+        recipient_ok = not recipient or recipient in blob
+        body_ok = not body or body in blob
+        return positive and not negative and recipient_ok and body_ok, ("positive_send_confirmation", "recipient_visible", "body_visible") if positive and not negative and recipient_ok and body_ok else ()
 
     @staticmethod
     def _upi_state(observation: Mapping[str, Any]) -> str:
@@ -185,9 +189,9 @@ class ActionSpecificVerifier:
         if kind == "upi":
             return self._verify_upi(call, expected, normalized_after)
         if kind in {"send", "send_message"}:
-            ui_ok, ui_evidence = self._ui_send_evidence(normalized_after)
+            ui_ok, ui_evidence = self._ui_send_evidence(normalized_after, expected)
             if ui_ok:
-                return PredicateResult(True, "universal.send_message", 0.97, ui_evidence, "positive send confirmation visible")
+                return PredicateResult(True, "universal.send_message", 0.97, ui_evidence, "positive send confirmation with recipient/body visible")
         hard = verify_universal(call.name, expected, normalized_after)
         if hard is not None:
             ok, confidence, reason, evidence = hard
