@@ -16,10 +16,9 @@ async def test_event_bus_persists_task_transitions_and_predicate(tmp_path) -> No
     await bus.publish("TASK_COMPLETED", {"task_id": "t1", "message": "done"})
 
     records = [json.loads(line) for line in (tmp_path / "tasks.jsonl").read_text().splitlines()]
-    assert [record["event_type"] for record in records if record["kind"] == "event"] == [
-        "TASK_STARTED", "action.started", "VERIFICATION", "TASK_COMPLETED"
-    ]
-    assert records[-1]["event_type"] == "TASK_COMPLETED"
+    events = [record for record in records if record["kind"] == "event"]
+    assert [record["event_type"] for record in events] == ["TASK_STARTED", "action.started", "VERIFICATION", "TASK_COMPLETED"]
+    assert events[-1]["event_type"] == "TASK_COMPLETED"
 
 
 @pytest.mark.asyncio
