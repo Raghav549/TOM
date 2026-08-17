@@ -2,6 +2,7 @@ package com.tom.device
 
 import android.animation.ValueAnimator
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -13,23 +14,26 @@ import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.switchmaterial.SwitchMaterial
 import kotlin.math.min
 
 object TomGlassUi {
-    val ink = Color.rgb(22, 22, 22)
-    val muted = Color.rgb(104, 99, 95)
+    val ink = Color.rgb(24, 24, 24)
+    val muted = Color.rgb(101, 97, 93)
     val brown = Color.rgb(122, 78, 47)
-    val brownLight = Color.rgb(176, 128, 91)
+    val brownLight = Color.rgb(174, 128, 91)
     val cream = Color.rgb(249, 247, 244)
     val white = Color.WHITE
-    val line = Color.rgb(231, 226, 221)
+    val line = Color.rgb(229, 224, 219)
 
     fun weatherBackground(): GradientDrawable = GradientDrawable(
         GradientDrawable.Orientation.TL_BR,
         intArrayOf(Color.WHITE, Color.rgb(252, 250, 248), Color.rgb(248, 246, 243))
     )
 
-    fun surface(context: Context, radius: Float = 24f, color: Int = white): GradientDrawable =
+    fun surface(context: Context, radius: Float = 20f, color: Int = white): GradientDrawable =
         GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = radius
@@ -40,7 +44,7 @@ object TomGlassUi {
     private fun darkAction(): GradientDrawable = GradientDrawable(
         GradientDrawable.Orientation.LEFT_RIGHT,
         intArrayOf(Color.rgb(18, 18, 18), brown)
-    ).apply { cornerRadius = 22f }
+    ).apply { cornerRadius = 20f }
 
     fun darkActionForCard(): GradientDrawable = darkAction()
 
@@ -85,6 +89,7 @@ object TomGlassUi {
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             val s = min(width, height).toFloat()
+            if (s <= 0f) return
             val cx = s / 2f
             val cy = s / 2f
             paint.style = Paint.Style.FILL
@@ -132,90 +137,90 @@ object TomGlassUi {
         textSize = 20f
         gravity = Gravity.CENTER
         setTextColor(ink)
-        background = surface(context, 18f, cream)
+        background = surface(context, 16f, cream)
         minHeight = 48
         minWidth = 48
         isClickable = true
         isFocusable = true
+        contentDescription = "Settings"
         setOnClickListener { press(this); onClick() }
     }
 
-    fun button(context: Context, label: String, onClick: () -> Unit, primary: Boolean = false): TextView = TextView(context).apply {
-        text = label
-        textSize = 14.5f
-        gravity = Gravity.CENTER
-        setTextColor(if (primary) white else ink)
-        background = if (primary) darkAction() else surface(context, 20f, cream)
-        setPadding(20, 15, 20, 15)
-        minHeight = 50
-        isClickable = true
-        isFocusable = true
-        elevation = 2f
-        setOnClickListener { press(this); onClick() }
-    }
-
-    fun navItem(context: Context, icon: String, label: String, selected: Boolean, onClick: () -> Unit): LinearLayout =
-        LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(5, 7, 5, 7)
-            background = if (selected) darkAction() else null
-            elevation = if (selected) 4f else 0f
-            addView(text(context, icon, 19f, if (selected) white else muted).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, 27))
-            addView(text(context, label, 11f, if (selected) white else muted).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, 22))
+    fun button(context: Context, label: String, onClick: () -> Unit, primary: Boolean = false): MaterialButton =
+        MaterialButton(context).apply {
+            text = label
+            textSize = 14.5f
+            isAllCaps = false
+            minHeight = 52
+            minimumHeight = 52
+            insetTop = 0
+            insetBottom = 0
+            cornerRadius = 18
+            strokeWidth = if (primary) 0 else 1
+            strokeColor = ColorStateList.valueOf(brown)
+            backgroundTintList = ColorStateList.valueOf(if (primary) ink else Color.WHITE)
+            setTextColor(if (primary) white else ink)
+            rippleColor = ColorStateList.valueOf(Color.argb(30, 122, 78, 47))
             isClickable = true
             isFocusable = true
             setOnClickListener { press(this); onClick() }
         }
 
-    fun card(context: Context, heading: String, description: String, action: String? = null, onClick: (() -> Unit)? = null): LinearLayout =
+    fun navItem(context: Context, icon: String, label: String, selected: Boolean, onClick: () -> Unit): LinearLayout =
         LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(20, 19, 20, 19)
-            background = surface(context, 22f)
-            elevation = 1.5f
-            addView(title(context, heading, 18f), LinearLayout.LayoutParams(-1, -2))
-            addView(body(context, description).apply { setPadding(0, 7, 0, 11) }, LinearLayout.LayoutParams(-1, -2))
-            if (action != null && onClick != null) addView(button(context, action, onClick, false), LinearLayout.LayoutParams(-1, -2))
+            gravity = Gravity.CENTER
+            setPadding(6, 6, 6, 6)
+            background = if (selected) darkAction() else null
+            elevation = if (selected) 3f else 0f
+            addView(text(context, icon, 19f, if (selected) white else muted).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, 26))
+            addView(text(context, label, 11f, if (selected) white else muted).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, 22))
+            isClickable = true
+            isFocusable = true
+            contentDescription = label
+            setOnClickListener { press(this); onClick() }
+        }
+
+    fun card(context: Context, heading: String, description: String, action: String? = null, onClick: (() -> Unit)? = null): MaterialCardView =
+        MaterialCardView(context).apply {
+            radius = 20f
+            cardElevation = 1.5f
+            strokeWidth = 1
+            strokeColor = line
+            setCardBackgroundColor(white)
+            val body = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(20, 18, 20, 18)
+                addView(title(context, heading, 18f), LinearLayout.LayoutParams(-1, -2))
+                addView(body(context, description).apply { setPadding(0, 7, 0, if (action == null) 0 else 12) }, LinearLayout.LayoutParams(-1, -2))
+                if (action != null && onClick != null) addView(button(context, action, onClick, false), LinearLayout.LayoutParams(-1, 52))
+            }
+            addView(body, ViewGroup.LayoutParams(-1, -2))
         }
 
     fun section(context: Context, value: String): TextView = text(context, value.uppercase(), 11f, brown).apply {
         letterSpacing = .14f
-        setPadding(3, 11, 3, 5)
+        setPadding(3, 12, 3, 5)
         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
     }
 
-    fun toggle(context: Context, checked: Boolean, onChanged: (Boolean) -> Unit): TextView = TextView(context).apply {
-        text = if (checked) "ON" else "OFF"
-        textSize = 11f
-        gravity = Gravity.CENTER
-        setTextColor(if (checked) white else muted)
-        background = if (checked) darkAction() else surface(context, 18f, cream)
-        setPadding(14, 7, 14, 7)
-        minWidth = 64
-        minHeight = 40
-        isClickable = true
-        isFocusable = true
-        setOnClickListener {
-            val next = !checked
-            text = if (next) "ON" else "OFF"
-            setTextColor(if (next) white else muted)
-            background = if (next) darkAction() else surface(context, 18f, cream)
-            press(this)
-            onChanged(next)
-        }
+    fun toggle(context: Context, checked: Boolean, onChanged: (Boolean) -> Unit): SwitchMaterial = SwitchMaterial(context).apply {
+        isChecked = checked
+        minWidth = 56
+        minHeight = 48
+        setOnCheckedChangeListener { _, value -> press(this); onChanged(value) }
     }
 
     fun press(view: View) {
-        view.animate().scaleX(.95f).scaleY(.95f).setDuration(70).withEndAction {
+        view.animate().scaleX(.97f).scaleY(.97f).setDuration(70).withEndAction {
             view.animate().scaleX(1f).scaleY(1f).setDuration(150).setInterpolator(DecelerateInterpolator()).start()
         }.start()
     }
 
     fun fadeIn(view: View) {
         view.alpha = 0f
-        view.translationY = 14f
-        view.animate().alpha(1f).translationY(0f).setDuration(300).setInterpolator(DecelerateInterpolator()).start()
+        view.translationY = 12f
+        view.animate().alpha(1f).translationY(0f).setDuration(260).setInterpolator(DecelerateInterpolator()).start()
     }
 
     fun animatePulse(view: View) {
