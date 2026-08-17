@@ -2,15 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .success_predicates import SuccessPredicateEngine, VerificationResult
+from .success_predicates import SuccessPredicateEngine, VerificationResult, VerificationState
 
 
 class ActionEffectVerifier:
-    """Normalizes Android/browser observations before action-specific verification.
+    """Normalizes observations before action-specific verification.
 
-    The verifier deliberately separates *transport completion* from *effect
-    evidence*. An ACK only proves that the executor accepted an action; the
-    predicate must be satisfied by the fresh post-action state.
+    Transport ACKs are never treated as task success. Consequential payment
+    actions additionally require authoritative provider terminal evidence.
     """
 
     def __init__(self) -> None:
@@ -24,7 +23,6 @@ class ActionEffectVerifier:
             merged = dict(snapshot)
             merged.update({k: v for k, v in obs.items() if k != "snapshot"})
             obs = merged
-
         package = obs.get("foreground_package") or obs.get("package") or obs.get("package_name")
         if package:
             obs["foreground_package"] = package
@@ -44,7 +42,6 @@ class ActionEffectVerifier:
             walk(tree)
         if isinstance(nodes, list):
             flattened.extend(node for node in nodes if isinstance(node, Mapping))
-
         if flattened:
             visible = list(obs.get("visible_text") or [])
             descriptions = list(obs.get("content_descriptions") or [])
@@ -66,13 +63,9 @@ class ActionEffectVerifier:
             obs["resource_ids"] = list(dict.fromkeys(resource_ids))
             obs["node_ids"] = list(dict.fromkeys(node_ids))
 
-        # NotificationListenerService payloads are promoted into the same
-        # evidence namespace used by send/payment/call predicates.
         notification = obs.get("notification") or obs.get("notification_data")
         if isinstance(notification, Mapping):
-            obs["notification_text"] = " ".join(
-                str(x) for x in (notification.get("title"), notification.get("text")) if x
-            )
+            obs["notification_text"] = " ".join(str(x) for x in (notification.get("title"), notification.get("text")) if x)
             obs["notification_package"] = notification.get("package")
             obs["notification_id"] = notification.get("id")
 
@@ -93,15 +86,31 @@ class ActionEffectVerifier:
         obs["evidence"] = evidence
         return obs
 
-    def verify(
-        self,
-        *,
-        action_kind: str,
-        expected: Mapping[str, Any],
-        observation: Mapping[str, Any] | None,
-    ) -> VerificationResult:
+    def verify(self, *, action_kind: str, expected: Mapping[str, Any], observation: Mapping[str, Any] | None) -> VerificationResult:
         normalized = self.normalize(observation)
-        return self.engine.verify(
+        result = self.engine.verify(
             {"kind": action_kind, "success_predicate": dict(expected)},
             normalized,
         )
+
+        # A payment is successful only when an authoritative provider reports
+        # a terminal success state. A transaction ID alone or a UI message is
+        # insufficient. This is intentionally deterministic and auditable.
+        if action_kind in {"upi", "payment", "device_upi_payment"}:
+            status = str(normalized.get("provider_status") or normalized.get("provider_payment_state") or "").casefold()
+            authoritative = bool(normalized.get("provider_authoritative"))
+            success_states = {str(x).casefold() for x in expected.get("success_states", ("success", "succeeded", "completed", "paid"))}
+            if authoritative and status in success_states and normalized.get("transaction_id"):
+                return VerificationResult(
+                    VerificationState.VERIFIED,
+                    "authoritative payment provider terminal success",
+                    0.99,
+                    tuple(result.evidence) + (type("Evidence", (), {"kind": "authoritative_provider"})(),),
+                    normalized,
+                )
+            if status in {"pending", "processing", "requires_action", "authorization_required"}:
+                return VerificationResult(VerificationState.UNKNOWN, "payment is not terminal", result.confidence, result.evidence, normalized)
+            if status in {"failed", "declined", "cancelled", "canceled"}:
+                return VerificationResult(VerificationState.FAILED, "payment provider reported failure", result.confidence, result.evidence, normalized)
+            return VerificationResult(VerificationState.UNKNOWN, "no authoritative payment success evidence", result.confidence, result.evidence, normalized)
+        return result
