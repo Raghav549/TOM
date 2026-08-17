@@ -18,7 +18,8 @@
     <application
         android:allowBackup="false"
         android:label="TOM"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:theme="@style/Theme.TOM">
         <activity android:name=".OnboardingActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
