@@ -43,12 +43,7 @@ class ActionSpecificVerifier:
             for node in nodes:
                 if not isinstance(node, Mapping) or node.get("password"):
                     continue
-                for key, target in (
-                    ("text", visible),
-                    ("content_description", descriptions),
-                    ("resource_id", ids),
-                    ("node_id", ids),
-                ):
+                for key, target in (("text", visible), ("content_description", descriptions), ("resource_id", ids), ("node_id", ids)):
                     if node.get(key):
                         target.append(str(node[key]))
             obs.setdefault("visible_text", visible)
@@ -62,45 +57,19 @@ class ActionSpecificVerifier:
         args = dict(call.arguments)
         name = call.name
         if name == "open_app":
-            return name, {
-                "package": args.get("expected_package", args.get("package_name")),
-                "activity": args.get("expected_activity"),
-                "ui_anchor": args.get("ui_anchor"),
-            }
+            return name, {"package": args.get("expected_package", args.get("package_name")), "activity": args.get("expected_activity"), "ui_anchor": args.get("ui_anchor")}
         if name in {"tap", "tap_node"}:
-            return "tap", {
-                "target": args.get("expected_text", args.get("expected_target", args.get("target_text"))),
-                "expected_package": args.get("expected_package"),
-                "post_state": args.get("post_state"),
-            }
+            return "tap", {"target": args.get("expected_text", args.get("expected_target", args.get("target_text"))), "expected_package": args.get("expected_package"), "post_state": args.get("post_state")}
         if name in {"search_google", "device_search_google"}:
-            return "search", {
-                "query": args.get("query", ""),
-                "result_state": args.get("result_state", "loaded"),
-                "result_contains": args.get("result_contains", []),
-            }
+            return "search", {"query": args.get("query", ""), "result_state": args.get("result_state", "loaded"), "result_contains": args.get("result_contains", [])}
         if name in {"set_text_node", "device_type"}:
             return "type", {"value": args.get("text", "")}
-        if name in {
-            "send_message",
-            "send_email",
-            "send_sms",
-            "send_form",
-            "communication.sms_send",
-            "google.gmail_send",
-        }:
-            return "send", {
-                "recipient": args.get("recipient", ""),
-                "body": args.get("body", args.get("message", args.get("text", ""))),
-            }
+        if name in {"send_message", "send_email", "send_sms", "send_form", "communication.sms_send", "google.gmail_send"}:
+            return "send", {"recipient": args.get("recipient", ""), "body": args.get("body", args.get("message", args.get("text", "")))}
         if name in {"create_calendar_event", "device_create_calendar_event"}:
             return "create_calendar_event", {"title": args.get("title", "")}
         if name in {"device_upi_payment", "upi_payment"}:
-            return "upi", {
-                "provider": args.get("provider", ""),
-                "amount": args.get("amount", args.get("am")),
-                "recipient": args.get("recipient", args.get("pn", args.get("pa", ""))),
-            }
+            return "upi", {"provider": args.get("provider", ""), "amount": args.get("amount", args.get("am")), "recipient": args.get("recipient", args.get("pn", args.get("pa", "")))}
         return name, {}
 
     @staticmethod
@@ -111,11 +80,7 @@ class ActionSpecificVerifier:
         if not isinstance(visible, list) or not query.strip():
             return
         blob = " ".join(str(x) for x in visible).casefold()
-        query_tokens = [
-            token
-            for token in query.casefold().replace("/", " ").replace("-", " ").split()
-            if len(token) > 1
-        ]
+        query_tokens = [token for token in query.casefold().replace("/", " ").replace("-", " ").split() if len(token) > 1]
         unique_tokens = set(query_tokens)
         if not unique_tokens:
             return
@@ -127,70 +92,34 @@ class ActionSpecificVerifier:
 
     @staticmethod
     def _ui_send_evidence(observation: Mapping[str, Any]) -> tuple[bool, tuple[str, ...]]:
-        blob = " ".join(
-            str(value)
-            for key in ("visible_text", "content_descriptions", "notification_text", "page_text")
-            for value in (
-                observation.get(key, [])
-                if isinstance(observation.get(key, []), (list, tuple))
-                else [observation.get(key, "")]
-            )
-        ).casefold()
-        positive = (
-            "message sent" in blob
-            or "sent successfully" in blob
-            or "message delivered" in blob
-            or "email sent" in blob
-            or "sms sent" in blob
-        )
-        negative = any(
-            token in blob
-            for token in ("failed to send", "couldn't send", "could not send", "not sent", "send failed")
-        )
+        values: list[str] = []
+        for key in ("visible_text", "content_descriptions", "notification_text", "page_text"):
+            value = observation.get(key, [])
+            if isinstance(value, (list, tuple)):
+                values.extend(str(item) for item in value)
+            elif value:
+                values.append(str(value))
+        blob = " ".join(values).casefold()
+        positive = any(token in blob for token in ("message sent", "sent successfully", "message delivered", "email sent", "sms sent"))
+        negative = any(token in blob for token in ("failed to send", "couldn't send", "could not send", "not sent", "send failed"))
         return positive and not negative, ("positive_send_confirmation",) if positive and not negative else ()
 
-    def verify(
-        self,
-        call: ToolCall,
-        result: ToolResult,
-        *,
-        before: Mapping[str, Any] | None = None,
-        after: Mapping[str, Any] | None = None,
-        provider: Mapping[str, Any] | None = None,
-    ) -> PredicateResult:
+    def verify(self, call: ToolCall, result: ToolResult, *, before: Mapping[str, Any] | None = None, after: Mapping[str, Any] | None = None, provider: Mapping[str, Any] | None = None) -> PredicateResult:
         if not result.success:
             return PredicateResult(False, "tool_success", 0.0, (), result.error or "tool failed")
-
         provider_data = dict(provider or {})
         device_verification = provider_data.get("device_verification")
         if isinstance(device_verification, Mapping):
             status = str(device_verification.get("status", "")).casefold()
             if status == "verified":
-                return PredicateResult(
-                    True,
-                    str(device_verification.get("predicate") or call.name),
-                    float(device_verification.get("confidence", 1.0)),
-                    tuple(str(x) for x in device_verification.get("evidence", [])),
-                    str(device_verification.get("reason", "authoritative device verification passed")),
-                )
+                return PredicateResult(True, str(device_verification.get("predicate") or call.name), float(device_verification.get("confidence", 1.0)), tuple(str(x) for x in device_verification.get("evidence", [])), str(device_verification.get("reason", "authoritative device verification passed")))
             if status in {"failed", "unknown"}:
-                return PredicateResult(
-                    False,
-                    str(device_verification.get("predicate") or call.name),
-                    float(device_verification.get("confidence", 0.0)),
-                    tuple(str(x) for x in device_verification.get("evidence", [])),
-                    str(device_verification.get("reason", f"device verification {status}")),
-                )
+                return PredicateResult(False, str(device_verification.get("predicate") or call.name), float(device_verification.get("confidence", 0.0)), tuple(str(x) for x in device_verification.get("evidence", [])), str(device_verification.get("reason", f"device verification {status}")))
 
         kind, expected = self._legacy_expected(call)
         try:
             contract_type = ActionType(call.name)
-            contract = build_action(
-                str(call.arguments.get("action_id", call.name)),
-                str(call.arguments.get("task_id", "")),
-                contract_type,
-                dict(call.arguments),
-            )
+            contract = build_action(str(call.arguments.get("action_id", call.name)), str(call.arguments.get("task_id", "")), contract_type, dict(call.arguments))
             expected = {**contract.predicate.expected, **expected}
             kind = contract_type.value
         except ValueError:
@@ -205,14 +134,7 @@ class ActionSpecificVerifier:
             if isinstance(normalized_after["evidence"], list):
                 for key, value in provider_data.items():
                     if key in {"status", "state", "transaction_status", "transaction_id", "id", "event_id", "provider_event_id"}:
-                        normalized_after["evidence"].append(
-                            {
-                                "kind": "provider",
-                                "value": value,
-                                "authoritative": key in {"status", "state", "transaction_status"},
-                                "confidence": 0.99,
-                            }
-                        )
+                        normalized_after["evidence"].append({"kind": "provider", "value": value, "authoritative": key in {"status", "state", "transaction_status"}, "confidence": 0.99})
             if provider_data.get("status"):
                 normalized_after["provider_status"] = provider_data["status"]
                 normalized_after["provider_payment_state"] = provider_data["status"]
@@ -225,9 +147,7 @@ class ActionSpecificVerifier:
             if provider_data.get("provider_event_id"):
                 normalized_after["event_id"] = provider_data["provider_event_id"]
 
-        # Communication can be verified either from an authoritative provider
-        # state or from an unambiguous post-send UI confirmation.
-        if kind == "send":
+        if kind in {"send", "send_message"}:
             ui_ok, ui_evidence = self._ui_send_evidence(normalized_after)
             if ui_ok:
                 return PredicateResult(True, "universal.send_message", 0.97, ui_evidence, "positive send confirmation visible")
@@ -236,13 +156,11 @@ class ActionSpecificVerifier:
         if hard is not None:
             ok, confidence, reason, evidence = hard
             if kind == "upi":
-                state = str(
-                    normalized_after.get("provider_payment_state", normalized_after.get("payment_state", ""))
-                ).casefold()
+                state = str(normalized_after.get("provider_payment_state", normalized_after.get("payment_state", ""))).casefold()
                 predicate = "upi.provider_success" if ok else ("upi.pending" if state == "pending" else "upi.provider_evidence")
             elif kind == "create_calendar_event":
                 predicate = "calendar.event_created"
-            elif kind == "send":
+            elif kind in {"send", "send_message"}:
                 predicate = "universal.send_message"
             else:
                 predicate = f"universal.{call.name}"
@@ -257,38 +175,11 @@ class ActionSpecificVerifier:
         if kind == call.name and not expected:
             return PredicateResult(True, "tool_success", 0.75, ("tool_result",), "tool returned a successful result")
 
-        verification = self._engine.verify(
-            {"kind": kind, "success_predicate": expected},
-            normalized_after,
-        )
-        predicate = {
-            "open_app": "open_app.expected_package",
-            "tap": "tap.expected_ui_target",
-            "tap_node": "tap.expected_ui_target",
-            "search": "search.expected_result_state",
-            "type": "set_text.expected_value",
-            "send": "universal.send_message",
-            "create_calendar_event": "calendar.event_created",
-            "upi": "upi.provider_success",
-        }.get(kind, "tool_success")
+        verification = self._engine.verify({"kind": kind, "success_predicate": expected}, normalized_after)
+        predicate = {"open_app": "open_app.expected_package", "tap": "tap.expected_ui_target", "tap_node": "tap.expected_ui_target", "search": "search.expected_result_state", "type": "set_text.expected_value", "send": "universal.send_message", "send_message": "universal.send_message", "create_calendar_event": "calendar.event_created", "upi": "upi.provider_success"}.get(kind, "tool_success")
         if kind == "open_app":
             wanted = expected.get("package")
-            observed = normalized_after.get(
-                "foreground_package",
-                normalized_after.get("package", normalized_after.get("package_name", "")),
-            )
+            observed = normalized_after.get("foreground_package", normalized_after.get("package", normalized_after.get("package_name", "")))
             if wanted and str(wanted).strip().casefold() == str(observed).strip().casefold() and not expected.get("activity") and not expected.get("ui_anchor"):
-                verification = type(verification)(
-                    verification.state,
-                    verification.reason,
-                    1.0,
-                    verification.evidence,
-                    verification.observed,
-                )
-        return PredicateResult(
-            verification.verified,
-            predicate,
-            verification.confidence,
-            tuple(e.kind for e in verification.evidence),
-            verification.reason,
-        )
+                verification = type(verification)(verification.state, verification.reason, 1.0, verification.evidence, verification.observed)
+        return PredicateResult(verification.verified, predicate, verification.confidence, tuple(e.kind for e in verification.evidence), verification.reason)
