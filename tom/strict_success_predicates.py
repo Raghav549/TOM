@@ -11,6 +11,7 @@ _TERMINAL_FAILURES = {
 }
 _PENDING = {"pending", "processing", "queued", "initiated", "connecting", "ringing", "loading", "submitted"}
 _SUCCESS = {"success", "successful", "succeeded", "completed", "complete", "sent", "delivered", "connected", "joined", "published", "booked", "uploaded", "downloaded", "saved"}
+_SEND_KINDS = {"send", "send_message", "send_email", "send_sms", "communication.sms_send", "google.gmail_send"}
 
 
 def _norm(value: Any) -> str:
@@ -43,10 +44,15 @@ def _evidence(obs: Mapping[str, Any]) -> tuple[Any, ...]:
 
 def _terminal_evidence(obs: Mapping[str, Any], values: set[str]) -> bool:
     for item in _evidence(obs):
-        if isinstance(item, Mapping):
-            value = _norm(item.get("value"))
-            if item.get("authoritative") is True and float(item.get("confidence", 0.0) or 0.0) >= 0.90 and value in values:
-                return True
+        if not isinstance(item, Mapping):
+            continue
+        value = _norm(item.get("value"))
+        try:
+            confidence = float(item.get("confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if item.get("authoritative") is True and confidence >= 0.90 and value in values:
+            return True
     return False
 
 
@@ -62,10 +68,10 @@ class StrictSuccessPredicateEngine(SuccessPredicateEngine):
             expected = {}
 
         # A failed or pending provider/device state always dominates a visual positive.
-        state = _state(obs, "provider_status", "payment_state", "transaction_status", "call_state", "video_call_state", "send_state", "form_state", "file_state")
+        state = _state(obs, "provider_status", "payment_state", "transaction_status", "call_state", "video_call_state", "send_state", "message_state", "form_state", "file_state")
         if state in _TERMINAL_FAILURES:
             return VerificationResult(VerificationState.FAILED, f"authoritative state is {state}", 1.0, result.evidence, obs)
-        if kind in {"payment", "upi", "send", "call", "video_call", "book", "form_submit", "upload", "download", "publish", "delete"} and state in _PENDING:
+        if kind in {"payment", "upi", "upi_payment", *_SEND_KINDS, "call", "video_call", "book", "form_submit", "upload", "download", "publish", "delete"} and state in _PENDING:
             return VerificationResult(VerificationState.UNKNOWN, f"action remains in non-terminal state: {state}", max(result.confidence, 0.95), result.evidence, obs)
 
         if kind == "tap" or kind == "tap_node":
@@ -78,31 +84,45 @@ class StrictSuccessPredicateEngine(SuccessPredicateEngine):
             result_count = obs.get("result_count", obs.get("results_count"))
             results = obs.get("results")
             has_results = isinstance(results, (list, tuple)) and len(results) > 0
-            if expected.get("require_results", True) and not has_results and not (isinstance(result_count, int) and result_count > 0):
-                if _state(obs, "result_state", "search_state") in {"no_results", "empty"}:
+            visible = obs.get("visible_text", ())
+            visible_count = len(visible) if isinstance(visible, (list, tuple)) else 0
+            search_state = _state(obs, "result_state", "search_state")
+            # Android/browser observations may expose the rendered result rows but not a
+            # separate result-count field. A loaded result header plus at least one
+            # additional visible row is durable enough to prove that results exist.
+            rendered_results = search_state in {"loaded", "results", "search_results"} and visible_count >= 2
+            if expected.get("require_results", True) and not has_results and not (isinstance(result_count, int) and result_count > 0) and not rendered_results:
+                if search_state in {"no_results", "empty"}:
                     return VerificationResult(VerificationState.FAILED, "search completed with no results", 1.0, result.evidence, obs)
                 return VerificationResult(VerificationState.UNKNOWN, "search result existence is not proven", result.confidence, result.evidence, obs)
 
-        if kind in {"send", "compose"}:
+        if kind in _SEND_KINDS or kind == "compose":
             body = _norm(expected.get("body", expected.get("text", "")))
             recipient = _norm(expected.get("recipient", ""))
             blob = _blob(obs)
-            if kind == "send":
-                payload_ok = (not body or body in blob or _norm(obs.get("message_body", obs.get("sent_body", ""))) == body)
-                recipient_ok = (not recipient or recipient in blob or _norm(obs.get("recipient", obs.get("sent_to", ""))) == recipient)
-                terminal = _terminal_evidence(obs, {"sent", "delivered", "success", "completed"}) or _state(obs, "send_state", "message_state", "provider_status") in {"sent", "delivered", "success", "completed"}
-                if terminal and payload_ok and recipient_ok:
-                    return VerificationResult(VerificationState.VERIFIED, "message delivery/send evidence confirmed", max(result.confidence, 0.97), result.evidence, obs)
-                return VerificationResult(VerificationState.UNKNOWN, "message send is not proven with terminal delivery evidence", result.confidence, result.evidence, obs)
+            actual_body = _norm(obs.get("message_body", obs.get("sent_body", "")))
+            actual_recipient = _norm(obs.get("recipient", obs.get("sent_to", "")))
+            payload_ok = (not body or body in blob or actual_body == body)
+            recipient_ok = (not recipient or recipient in blob or actual_recipient == recipient)
+            terminal = _terminal_evidence(obs, {"sent", "delivered", "success", "completed"}) or _state(obs, "send_state", "message_state", "provider_status") in {"sent", "delivered", "success", "completed"}
+            if terminal and payload_ok and recipient_ok:
+                return VerificationResult(VerificationState.VERIFIED, "message delivery/send evidence confirmed", max(result.confidence, 0.97), result.evidence, obs)
+            return VerificationResult(VerificationState.UNKNOWN, "message send is not proven with terminal delivery evidence", result.confidence, result.evidence, obs)
 
         if kind in {"call", "video_call"}:
             target = _norm(expected.get("contact", expected.get("recipient", "")))
             actual = _norm(obs.get("connected_contact", obs.get("contact", obs.get("phone_number", ""))))
-            connected = _state(obs, "call_state", "telephony_state", "video_call_state") in {"connected", "in_call", "joined", "answered"}
+            connected = _state(obs, "call_state", "telephony_state", "video_call_state") in {"connected", "in_call", "joined", "answered", "active", "ongoing"}
             target_ok = not target or target == actual or target in _blob(obs)
+            if kind == "video_call":
+                video = bool(obs.get("video_active", obs.get("camera_active", False)))
+                audio = bool(obs.get("audio_active", obs.get("microphone_active", False)))
+                if connected and target_ok and video and audio:
+                    return VerificationResult(VerificationState.VERIFIED, "video call connection, camera and audio confirmed", max(result.confidence, 0.99), result.evidence, obs)
+                return VerificationResult(VerificationState.UNKNOWN, "video/audio active state not fully confirmed", result.confidence, result.evidence, obs)
             if connected and target_ok:
-                return VerificationResult(VerificationState.VERIFIED, "call/video-call connection and target confirmed", max(result.confidence, 0.97), result.evidence, obs)
-            return VerificationResult(VerificationState.UNKNOWN, "call/video-call connection is not proven", result.confidence, result.evidence, obs)
+                return VerificationResult(VerificationState.VERIFIED, "call connection and target confirmed", max(result.confidence, 0.97), result.evidence, obs)
+            return VerificationResult(VerificationState.UNKNOWN, "call connection is not proven", result.confidence, result.evidence, obs)
 
         if kind in {"form_submit", "book", "publish", "delete", "upload", "download"}:
             success_state = _state(obs, "form_state", "booking_state", "publish_state", "delete_state", "file_state", "upload_state", "download_state")
