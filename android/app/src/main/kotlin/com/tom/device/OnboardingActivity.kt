@@ -22,7 +22,6 @@ import android.widget.ScrollView
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
-import com.google.android.material.progressindicator.LinearProgressIndicator
 
 class OnboardingActivity : Activity() {
     private lateinit var root: FrameLayout
@@ -65,8 +64,16 @@ class OnboardingActivity : Activity() {
         stack.addView(TomGlassUi.logo(this, dp(128)), LinearLayout.LayoutParams(dp(128), dp(128)))
         stack.addView(TomGlassUi.title(this, "TOM", 40f).apply { gravity = Gravity.CENTER; includeFontPadding = false }, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(14) })
         stack.addView(TomGlassUi.body(this, "Observe  •  Understand  •  Assist").apply { gravity = Gravity.CENTER; includeFontPadding = false }, LinearLayout.LayoutParams(-1, dp(28)).apply { topMargin = dp(4) })
-        val progress = LinearProgressIndicator(this).apply { max = 100; trackThickness = dp(4); setIndicatorColor(TomGlassUi.brown); trackColor = Color.rgb(222, 232, 239); setProgressCompat(0, false) }
-        stack.addView(progress, LinearLayout.LayoutParams(-1, dp(4)).apply { leftMargin = dp(30); rightMargin = dp(30); topMargin = dp(26) })
+
+        // Keep the first-frame splash entirely Android-native. This avoids constructing a
+        // Material progress widget before the activity has fully entered the window.
+        val progressTrack = View(this).apply { background = rounded(Color.rgb(222, 232, 239), 3, Color.TRANSPARENT) }
+        val progressFill = View(this).apply { background = rounded(TomGlassUi.brown, 3, Color.TRANSPARENT) }
+        val progressFrame = FrameLayout(this)
+        progressFrame.addView(progressTrack, FrameLayout.LayoutParams(-1, dp(4)))
+        progressFrame.addView(progressFill, FrameLayout.LayoutParams(0, dp(4)))
+        stack.addView(progressFrame, LinearLayout.LayoutParams(-1, dp(4)).apply { leftMargin = dp(30); rightMargin = dp(30); topMargin = dp(26) })
+
         val percent = TomGlassUi.body(this, "0%").apply { gravity = Gravity.CENTER; includeFontPadding = false }
         stack.addView(percent, LinearLayout.LayoutParams(-1, dp(28)).apply { topMargin = dp(6) })
         splash.addView(stack, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
@@ -78,7 +85,10 @@ class OnboardingActivity : Activity() {
             override fun run() {
                 if (isFinishing || splash.parent == null) return
                 value = (value + 4).coerceAtMost(100)
-                progress.setProgressCompat(value, true)
+                progressFill.layoutParams = (progressFill.layoutParams as FrameLayout.LayoutParams).apply {
+                    width = ((progressFrame.width * value) / 100).coerceAtLeast(if (value > 0) 1 else 0)
+                }
+                progressFill.requestLayout()
                 percent.text = "$value%"
                 if (value < 100) mainHandler.postDelayed(this, 42) else mainHandler.postDelayed({ if (!isFinishing && splash.parent != null) splash.animate().alpha(0f).setDuration(280).withEndAction { if (!isFinishing) showStep() }.start() }, 180)
             }
