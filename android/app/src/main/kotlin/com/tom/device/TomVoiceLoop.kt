@@ -12,11 +12,14 @@ import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -46,12 +49,14 @@ class TomVoiceLoop(
         private const val START_RMS = 0.020f
         private const val START_FRAMES = 2
         private const val PLAYBACK_QUEUE_CAPACITY = 10
+        private const val TTS_READY_TIMEOUT_MS = 4_000L
     }
 
     private val client = OkHttpClient.Builder().build()
     private val executor = Executors.newCachedThreadPool()
     private val playbackExecutor = Executors.newSingleThreadExecutor()
     private val playbackQueue = LinkedBlockingQueue<ByteArray>(PLAYBACK_QUEUE_CAPACITY)
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var socket: WebSocket? = null
     private var recorder: AudioRecord? = null
     private var track: AudioTrack? = null
@@ -59,6 +64,8 @@ class TomVoiceLoop(
     private var tts: TextToSpeech? = null
     private var recognizer: SpeechRecognizer? = null
     private val running = AtomicBoolean(false)
+    private val scriptedTestRunning = AtomicBoolean(false)
+    private var ttsReady = false
     private var tomSpeaking = false
     private var coreFailed = false
 
@@ -71,11 +78,12 @@ class TomVoiceLoop(
         }
         initLocalVoice()
         startPlaybackWorker()
-        connect()
+        runScriptedVoiceTest { connect() }
     }
 
     fun stop() {
         if (!running.getAndSet(false)) return
+        mainHandler.removeCallbacksAndMessages(null)
         socket?.close(1000, "client_stop")
         socket = null
         stopRecorder()
@@ -86,26 +94,133 @@ class TomVoiceLoop(
         tts?.stop()
         tts?.shutdown()
         tts = null
+        ttsReady = false
+        scriptedTestRunning.set(false)
         playbackQueue.clear()
     }
 
     private fun initLocalVoice() {
-        if (tts == null) {
-            tts = TextToSpeech(context) { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    tts?.language = Locale("hi", "IN")
-                    tts?.setSpeechRate(0.96f)
+        if (tts != null) return
+        ttsReady = false
+        tts = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                val local = tts
+                if (local != null) {
+                    local.setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    val languageStatus = local.setLanguage(Locale("hi", "IN"))
+                    if (languageStatus == TextToSpeech.LANG_MISSING_DATA || languageStatus == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        local.setLanguage(Locale.ENGLISH)
+                    }
+                    local.setSpeechRate(0.96f)
+                    ttsReady = true
+                    onState("tts_ready")
                 }
+            } else {
+                ttsReady = false
+                onError("Android Text-to-Speech initialization failed: $status")
             }
         }
     }
 
-    private fun say(text: String) {
+    /**
+     * A deterministic local smoke test. It exercises Android TTS before any Core
+     * connection is trusted, then continues into the real WebSocket voice path.
+     * Each utterance is advanced by UtteranceProgressListener rather than a
+     * guessed timer, so slow TTS engines do not create overlapping speech.
+     */
+    private fun runScriptedVoiceTest(onComplete: () -> Unit) {
+        if (!running.get() || !scriptedTestRunning.compareAndSet(false, true)) return
+        onState("self_test_tts")
+        waitForTts(0, onComplete)
+    }
+
+    private fun waitForTts(attempt: Int, onComplete: () -> Unit) {
         if (!running.get()) return
+        if (ttsReady) {
+            speakScriptStep(0, onComplete)
+            return
+        }
+        if (attempt >= 20) {
+            scriptedTestRunning.set(false)
+            onError("Android Text-to-Speech did not become ready")
+            onState("self_test_tts_failed")
+            onComplete()
+            return
+        }
+        mainHandler.postDelayed({ waitForTts(attempt + 1, onComplete) }, TTS_READY_TIMEOUT_MS / 20)
+    }
+
+    private fun speakScriptStep(step: Int, onComplete: () -> Unit) {
+        if (!running.get()) return
+        val local = tts
+        if (!ttsReady || local == null) {
+            scriptedTestRunning.set(false)
+            onError("TTS became unavailable during self-test")
+            onState("self_test_tts_failed")
+            onComplete()
+            return
+        }
+
+        val utteranceId = "tom-self-test-$step-${System.nanoTime()}"
+        val text = when (step) {
+            0 -> "Namaste. Main TOM hoon. Ye meri voice self test hai."
+            1 -> "Voice output check complete. Ab main real TOM Core connection test kar raha hoon."
+            else -> "TOM voice ready. Aap bol sakte hain."
+        }
+        local.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(id: String) {
+                if (id == utteranceId) onState("self_test_speaking_${step + 1}")
+            }
+
+            override fun onDone(id: String) {
+                if (id != utteranceId || !running.get()) return
+                if (step < 2) {
+                    onState("self_test_step_${step + 1}_passed")
+                    speakScriptStep(step + 1, onComplete)
+                } else {
+                    scriptedTestRunning.set(false)
+                    onState("self_test_passed")
+                    onComplete()
+                }
+            }
+
+            override fun onError(id: String, errorCode: Int) {
+                if (id != utteranceId || !running.get()) return
+                scriptedTestRunning.set(false)
+                onError("TTS self-test failed at step ${step + 1}: code $errorCode")
+                onState("self_test_failed")
+                onComplete()
+            }
+        })
+        val result = runCatching {
+            local.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        }.getOrElse {
+            scriptedTestRunning.set(false)
+            onError("TTS self-test exception: ${it.message}")
+            onState("self_test_failed")
+            onComplete()
+            return
+        }
+        if (result != TextToSpeech.SUCCESS) {
+            scriptedTestRunning.set(false)
+            onError("TTS self-test could not start: code $result")
+            onState("self_test_failed")
+            onComplete()
+        }
+    }
+
+    private fun say(text: String) {
+        if (!running.get() || !ttsReady) return
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "tom-${System.currentTimeMillis()}")
     }
 
     private fun connect() {
+        if (!running.get()) return
         onState("connecting")
         val request = runCatching { Request.Builder().url(endpoint).build() }.getOrElse {
             enterLocalFallback("Invalid voice endpoint")
@@ -138,9 +253,6 @@ class TomVoiceLoop(
             override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
                 if (!running.get()) return
                 val pcm = bytes.toByteArray()
-                // Never block the OkHttp callback thread on AudioTrack. Keep only
-                // a small amount of audio buffered to hide network jitter without
-                // adding a large conversational delay.
                 if (!playbackQueue.offer(pcm)) {
                     playbackQueue.poll()
                     playbackQueue.offer(pcm)
@@ -212,7 +324,7 @@ class TomVoiceLoop(
     }
 
     private fun startLocalRecognizerDelayed(delay: Long = 500L) {
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+        mainHandler.postDelayed({
             if (!running.get() || !coreFailed) return@postDelayed
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
