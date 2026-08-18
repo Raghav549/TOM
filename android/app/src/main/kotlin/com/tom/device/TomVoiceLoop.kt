@@ -5,34 +5,25 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.AudioTrack
-import android.media.MediaRecorder
-import android.media.audiofx.AcousticEchoCanceler
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.Process
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.util.Locale
-import java.util.concurrent.Executors
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.sqrt
 
-/** Real Android voice bridge with a deterministic local TTS self-test before Core connection. */
+/**
+ * Stable Android voice surface for TOM's demo/runtime voice path.
+ *
+ * Local TTS + Android speech recognition are independent of the remote Core.
+ * A Core/WebSocket failure therefore never makes TOM silent.
+ */
 class TomVoiceLoop(
     private val context: Context,
     private val endpoint: String,
@@ -41,249 +32,193 @@ class TomVoiceLoop(
     private val onTranscript: (String) -> Unit = {},
     private val onError: (String) -> Unit = {},
 ) {
-    companion object {
-        private const val INPUT_RATE = 16_000
-        private const val OUTPUT_RATE = 24_000
-        private const val FRAME_SAMPLES = 320
-        private const val PLAYBACK_QUEUE_CAPACITY = 10
-        private const val SELF_TEST_TIMEOUT_MS = 5_000L
-    }
-
-    private val client = OkHttpClient.Builder().build()
-    private val audioExecutor = Executors.newCachedThreadPool()
-    private val playbackExecutor = Executors.newSingleThreadExecutor()
-    private val playbackQueue = LinkedBlockingQueue<ByteArray>(PLAYBACK_QUEUE_CAPACITY)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val running = AtomicBoolean(false)
     private val selfTestRunning = AtomicBoolean(false)
 
-    private var socket: WebSocket? = null
-    private var recorder: AudioRecord? = null
-    private var track: AudioTrack? = null
-    private var echoCanceler: AcousticEchoCanceler? = null
     private var tts: TextToSpeech? = null
-    private var recognizer: SpeechRecognizer? = null
     private var ttsReady = false
-    private var coreFailed = false
-    private var tomSpeaking = false
+    private var recognizer: SpeechRecognizer? = null
+    private var recognitionRestartScheduled = false
+    private var coreSocket: okhttp3.WebSocket? = null
+
+    private val pendingUtterances = ConcurrentHashMap<String, () -> Unit>()
+    private val pendingErrors = ConcurrentHashMap<String, () -> Unit>()
+
+    private val utteranceListener = object : UtteranceProgressListener() {
+        override fun onStart(utteranceId: String) {
+            if (running.get()) onState("speaking")
+        }
+
+        override fun onDone(utteranceId: String) {
+            val action = pendingUtterances.remove(utteranceId) ?: return
+            if (running.get()) mainHandler.post(action)
+        }
+
+        override fun onError(utteranceId: String) {
+            val action = pendingErrors.remove(utteranceId) ?: return
+            if (running.get()) mainHandler.post(action)
+        }
+
+        override fun onError(utteranceId: String, errorCode: Int) {
+            val action = pendingErrors.remove(utteranceId) ?: return
+            if (running.get()) {
+                onError("TTS error code $errorCode")
+                mainHandler.post(action)
+            }
+        }
+    }
 
     fun start() {
-        if (running.getAndSet(true)) return
+        if (!running.compareAndSet(false, true)) return
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             running.set(false)
             onError("Microphone permission is required")
             return
         }
+        onState("voice_starting")
         initTts()
-        startPlaybackWorker()
-        runScriptedVoiceTest { connectCore() }
     }
 
     fun stop() {
         if (!running.getAndSet(false)) return
         mainHandler.removeCallbacksAndMessages(null)
-        socket?.close(1000, "client_stop")
-        socket = null
-        stopRecorder()
-        stopPlayback()
+        recognitionRestartScheduled = false
         recognizer?.cancel()
         recognizer?.destroy()
         recognizer = null
+        coreSocket?.close(1000, "client_stop")
+        coreSocket = null
+        pendingUtterances.clear()
+        pendingErrors.clear()
         tts?.stop()
         tts?.shutdown()
         tts = null
         ttsReady = false
         selfTestRunning.set(false)
-        playbackQueue.clear()
+        onState("stopped")
     }
 
     private fun initTts() {
-        if (tts != null) return
+        val appContext = context.applicationContext
         ttsReady = false
-        tts = TextToSpeech(context) { result ->
-            if (result != TextToSpeech.SUCCESS) {
-                onError("Android Text-to-Speech initialization failed: $result")
+        onState("tts_initializing")
+        tts = TextToSpeech(appContext) { status ->
+            if (!running.get()) return@TextToSpeech
+            if (status != TextToSpeech.SUCCESS) {
+                onError("Android Text-to-Speech initialization failed: $status")
+                onState("tts_failed")
                 return@TextToSpeech
             }
-            val engine = tts ?: return@TextToSpeech
-            engine.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            val language = engine.setLanguage(Locale("hi", "IN"))
-            if (language == TextToSpeech.LANG_MISSING_DATA || language == TextToSpeech.LANG_NOT_SUPPORTED) {
-                engine.setLanguage(Locale.ENGLISH)
+
+            val engine = tts
+            if (engine == null) {
+                onError("Android Text-to-Speech engine is unavailable")
+                onState("tts_failed")
+                return@TextToSpeech
             }
-            engine.setSpeechRate(0.96f)
-            ttsReady = true
-            onState("tts_ready")
+
+            runCatching {
+                engine.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                val hi = engine.setLanguage(Locale("hi", "IN"))
+                if (hi == TextToSpeech.LANG_MISSING_DATA || hi == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    val en = engine.setLanguage(Locale.US)
+                    if (en == TextToSpeech.LANG_MISSING_DATA || en == TextToSpeech.LANG_NOT_SUPPORTED) {
+                        throw IllegalStateException("Hindi and English TTS languages are unavailable")
+                    }
+                }
+                engine.setSpeechRate(0.96f)
+                engine.setOnUtteranceProgressListener(utteranceListener)
+                ttsReady = true
+                onState("tts_ready")
+                runScriptedVoiceTest()
+            }.onFailure {
+                ttsReady = false
+                onError("TTS configuration failed: ${it.message}")
+                onState("tts_failed")
+            }
         }
     }
 
-    private fun runScriptedVoiceTest(onComplete: () -> Unit) {
+    /** Three deterministic spoken steps; each step waits for the real TTS callback. */
+    private fun runScriptedVoiceTest() {
         if (!running.get() || !selfTestRunning.compareAndSet(false, true)) return
         onState("self_test_tts")
-        waitForTts(0, onComplete)
+        speakStep(0)
     }
 
-    private fun waitForTts(attempt: Int, onComplete: () -> Unit) {
+    private fun speakStep(step: Int) {
         if (!running.get()) return
-        if (ttsReady) {
-            speakTestStep(0, onComplete)
-            return
-        }
-        if (attempt >= 20) {
-            selfTestRunning.set(false)
-            onError("Android Text-to-Speech did not become ready")
-            onState("self_test_tts_failed")
-            onComplete()
-            return
-        }
-        mainHandler.postDelayed({ waitForTts(attempt + 1, onComplete) }, SELF_TEST_TIMEOUT_MS / 20)
-    }
-
-    private fun speakTestStep(step: Int, onComplete: () -> Unit) {
-        if (!running.get()) return
-        val engine = tts
-        if (!ttsReady || engine == null) {
-            failSelfTest("TTS became unavailable during self-test", onComplete)
-            return
-        }
-        val utteranceId = "tom-self-test-$step-${System.nanoTime()}"
         val text = when (step) {
             0 -> "Namaste. Main TOM hoon. Ye meri voice self test hai."
-            1 -> "Voice output check complete. Ab main real TOM Core connection test kar raha hoon."
-            else -> "TOM voice ready. Aap bol sakte hain."
+            1 -> "Voice output check complete. Ab aap mujhe bol sakte hain."
+            else -> "TOM voice ready. Boliye, main sun raha hoon."
         }
-        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(id: String) {
-                if (id == utteranceId) onState("self_test_speaking_${step + 1}")
-            }
-
-            override fun onDone(id: String) {
-                if (id != utteranceId || !running.get()) return
+        val next: () -> Unit = {
+            if (running.get()) {
                 if (step < 2) {
                     onState("self_test_step_${step + 1}_passed")
-                    speakTestStep(step + 1, onComplete)
+                    speakStep(step + 1)
                 } else {
                     selfTestRunning.set(false)
                     onState("self_test_passed")
-                    onComplete()
+                    startLocalRecognizer()
+                    connectCoreSilently()
                 }
             }
-
-            // Required by the abstract Android listener contract on some SDK/toolchain combinations.
-            override fun onError(id: String) {
-                if (id != utteranceId || !running.get()) return
-                failSelfTest("TTS self-test failed at step ${step + 1}", onComplete)
-            }
-
-            // API 21+ overload with a concrete error code.
-            override fun onError(id: String, errorCode: Int) {
-                if (id != utteranceId || !running.get()) return
-                failSelfTest("TTS self-test failed at step ${step + 1}: code $errorCode", onComplete)
-            }
-        })
-        val result = runCatching {
-            engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
-        }.getOrElse {
-            failSelfTest("TTS self-test exception: ${it.message}", onComplete)
-            return
         }
-        if (result != TextToSpeech.SUCCESS) {
-            failSelfTest("TTS self-test could not start: code $result", onComplete)
+        speak(text, "self-test-$step", next) {
+            selfTestRunning.set(false)
+            onState("self_test_failed")
+            startLocalRecognizer()
         }
     }
 
-    private fun failSelfTest(message: String, onComplete: () -> Unit) {
-        selfTestRunning.set(false)
-        onError(message)
-        onState("self_test_failed")
-        onComplete()
+    private fun speak(text: String, tag: String, onDone: () -> Unit = {}, onFailure: () -> Unit = {}) {
+        val engine = tts
+        if (!running.get() || !ttsReady || engine == null) {
+            onError("TTS is not ready")
+            onFailure()
+            return
+        }
+        val id = "tom-$tag-${System.nanoTime()}"
+        pendingUtterances[id] = onDone
+        pendingErrors[id] = onFailure
+        val result = runCatching {
+            engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, id)
+        }.getOrElse {
+            pendingUtterances.remove(id)
+            pendingErrors.remove(id)
+            onError("TTS speak exception: ${it.message}")
+            onFailure()
+            return
+        }
+        if (result != TextToSpeech.SUCCESS) {
+            pendingUtterances.remove(id)
+            pendingErrors.remove(id)
+            onError("TTS could not start: code $result")
+            onFailure()
+        }
     }
 
     private fun say(text: String) {
         if (!running.get() || !ttsReady) return
-        runCatching { tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "tom-${System.nanoTime()}") }
-    }
-
-    private fun connectCore() {
-        if (!running.get()) return
-        onState("connecting")
-        val request = runCatching { Request.Builder().url(endpoint).build() }.getOrElse {
-            enterLocalFallback("Invalid voice endpoint")
-            return
-        }
-        socket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (!running.get()) return
-                coreFailed = false
-                webSocket.send(
-                    JSONObject()
-                        .put("type", "hello")
-                        .put("protocol", 4)
-                        .put("voice_id", voiceId)
-                        .put("sample_rate", INPUT_RATE)
-                        .put("continuous_audio", true)
-                        .put("full_duplex", true)
-                        .toString()
-                )
-                onState("connected")
-                say("TOM connected. Boliye.")
-                ensureTrack()
-                track?.play()
-                startRecorder()
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                runCatching { handleEvent(JSONObject(text)) }
-                    .onFailure { onError("Invalid voice event: ${it.message}") }
-            }
-
-            override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
-                if (!running.get()) return
-                val pcm = bytes.toByteArray()
-                if (!playbackQueue.offer(pcm)) {
-                    playbackQueue.poll()
-                    playbackQueue.offer(pcm)
-                }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (!running.get()) return
-                tomSpeaking = false
-                playbackQueue.clear()
-                onState("core_unavailable")
-                enterLocalFallback(t.message ?: "TOM Core is unreachable")
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                tomSpeaking = false
-                if (running.get()) onState("closed")
-            }
-        })
-    }
-
-    private fun enterLocalFallback(reason: String) {
-        if (!running.get() || coreFailed) return
-        coreFailed = true
-        stopRecorder()
-        stopPlayback()
-        onError("TOM Core unavailable: $reason")
-        onState("local_voice")
-        say("TOM Core se connection nahi ho raha. Main local voice mode mein hoon. Aap bol sakte hain.")
-        startLocalRecognizer()
+        speak(text, "reply-${System.nanoTime()}")
     }
 
     private fun startLocalRecognizer() {
         if (!running.get()) return
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             onError("Android speech recognition is not available on this device")
-            say("Is phone par speech recognition available nahi hai.")
+            onState("voice_output_only")
             return
         }
+
         if (recognizer == null) {
             recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
                 setRecognitionListener(object : RecognitionListener {
@@ -293,49 +228,61 @@ class TomVoiceLoop(
                     override fun onBufferReceived(buffer: ByteArray?) = Unit
                     override fun onEndOfSpeech() { onState("processing") }
                     override fun onError(error: Int) {
-                        if (running.get() && coreFailed) {
-                            onState("listening")
-                            startLocalRecognizerDelayed()
+                        if (running.get()) {
+                            onState("listening_retry_$error")
+                            scheduleRecognizerRestart(350L)
                         }
                     }
                     override fun onResults(results: Bundle?) {
-                        val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim().orEmpty()
+                        val text = results
+                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull()
+                            ?.trim()
+                            .orEmpty()
                         if (text.isNotEmpty()) {
                             onTranscript(text)
                             handleLocalCommand(text)
                         }
-                        if (running.get() && coreFailed) startLocalRecognizerDelayed()
+                        scheduleRecognizerRestart(250L)
                     }
                     override fun onPartialResults(partialResults: Bundle?) {
-                        val text = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
+                        val text = partialResults
+                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            ?.firstOrNull()
+                            .orEmpty()
                         if (text.isNotBlank()) onTranscript(text)
                     }
                     override fun onEvent(eventType: Int, params: Bundle?) = Unit
                 })
             }
         }
-        startLocalRecognizerDelayed(150L)
+        scheduleRecognizerRestart(150L)
     }
 
-    private fun startLocalRecognizerDelayed(delay: Long = 500L) {
+    private fun scheduleRecognizerRestart(delay: Long) {
+        if (!running.get() || recognitionRestartScheduled) return
+        recognitionRestartScheduled = true
         mainHandler.postDelayed({
-            if (!running.get() || !coreFailed) return@postDelayed
+            recognitionRestartScheduled = false
+            if (!running.get()) return@postDelayed
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 800L)
             }
             runCatching { recognizer?.startListening(intent) }
-                .onFailure { onError("Local speech start failed: ${it.message}") }
+                .onFailure { onError("Speech recognition start failed: ${it.message}") }
         }, delay)
     }
 
     private fun handleLocalCommand(raw: String) {
         val text = raw.lowercase(Locale.ROOT)
         when {
-            text.contains("hello") || text.contains("hi") || text.contains("नमस्ते") || text.contains("namaste") ->
-                say("Namaste. Main TOM hoon. Core connection ke bina main abhi basic local mode mein hoon.")
+            text.contains("hello") || text.contains("hi") || text.contains("namaste") || text.contains("नमस्ते") ->
+                say("Namaste. Main TOM hoon. Main aapki baat sun raha hoon.")
             text.contains("home") || text.contains("होम") -> {
                 runCatching { TomAccessibilityService.instance().home() }
                 say("Home kar diya.")
@@ -350,163 +297,48 @@ class TomVoiceLoop(
             }
             text.contains("stop") || text.contains("बंद") || text.contains("रुको") -> {
                 say("Theek hai.")
-                stop()
+                mainHandler.postDelayed({ stop() }, 450L)
             }
-            else -> say("Maine suna: $raw. Full AI jawab ke liye TOM Core ko reachable WSS endpoint par connect karna hoga.")
+            else -> say("Maine suna: $raw. Abhi main local demo voice mode mein hoon.")
         }
     }
 
-    private fun handleEvent(event: JSONObject) {
-        when (event.optString("type")) {
-            "connected", "ready" -> onState("listening")
-            "state" -> onState(event.optString("value", "working"))
-            "partial_transcript", "transcript" -> onTranscript(event.optString("text"))
-            "response_partial", "response" -> onState("speaking")
-            "prosody", "turn_prediction", "latency", "smart_turn" -> Unit
-            "audio_start" -> {
-                tomSpeaking = true
-                ensureTrack()
-                track?.play()
-                onState("speaking")
-            }
-            "audio_stop", "audio_end" -> {
-                tomSpeaking = false
-                playbackQueue.clear()
-                track?.pause()
-                track?.flush()
-                onState("listening")
-            }
-            "error" -> onError(event.optString("detail", "voice server error"))
-        }
-    }
-
-    private fun startRecorder() {
-        audioExecutor.execute {
-            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-            val minBuffer = AudioRecord.getMinBufferSize(INPUT_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            if (minBuffer <= 0) {
-                onError("Android AudioRecord is unavailable")
-                return@execute
-            }
-            val bufferSize = maxOf(minBuffer, FRAME_SAMPLES * 2 * 8)
-            val local = runCatching {
-                AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, INPUT_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
-            }.getOrElse {
-                onError("Microphone initialization failed: ${it.message}")
-                return@execute
-            }
-            recorder = local
-            echoCanceler = AcousticEchoCanceler.create(local.audioSessionId)?.also { runCatching { it.enabled = true } }
-            val frame = ShortArray(FRAME_SAMPLES)
-            var speechFrames = 0
-            var localSpeaking = false
-            try {
-                local.startRecording()
-                while (running.get() && !coreFailed) {
-                    val read = local.read(frame, 0, frame.size, AudioRecord.READ_BLOCKING)
-                    if (read <= 0) continue
-                    socket?.send(okio.ByteString.of(*shortsToBytes(frame, read)))
-                    val active = rms(frame, read) >= 0.020f
-                    if (active) {
-                        speechFrames++
-                        if (!localSpeaking && speechFrames >= 2) {
-                            localSpeaking = true
-                            if (tomSpeaking) {
-                                socket?.send(JSONObject().put("type", "interrupt").put("reason", "android_local_barge_in").toString())
-                                playbackQueue.clear()
-                                track?.pause()
-                                track?.flush()
-                                tomSpeaking = false
-                                onState("interrupting")
-                            }
-                        }
-                    } else {
-                        speechFrames = maxOf(0, speechFrames - 1)
-                        if (speechFrames == 0) localSpeaking = false
-                    }
-                }
-            } catch (t: Throwable) {
-                if (running.get() && !coreFailed) onError("Microphone loop failed: ${t.message}")
-            } finally {
-                runCatching { local.stop() }
-                local.release()
-                echoCanceler?.release()
-                echoCanceler = null
-                recorder = null
-            }
-        }
-    }
-
-    private fun startPlaybackWorker() {
-        playbackExecutor.execute {
-            Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-            while (running.get()) {
-                val pcm = try { playbackQueue.poll(250, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) { break } ?: continue
-                if (!running.get()) break
-                ensureTrack()
-                val local = track ?: continue
-                runCatching { local.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING) }
-                    .onFailure { if (running.get()) onError("Audio playback failed: ${it.message}") }
-            }
-        }
-    }
-
-    private fun ensureTrack() {
-        if (track != null) return
-        val min = AudioTrack.getMinBufferSize(OUTPUT_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (min <= 0) return
-        track = runCatching {
-            AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ASSISTANT)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(OUTPUT_RATE)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build()
-                )
-                .setBufferSizeInBytes(maxOf(min, 24_000))
-                .setTransferMode(AudioTrack.MODE_STREAM)
+    /** Remote Core is optional for the demo; its failure never disables local voice. */
+    private fun connectCoreSilently() {
+        if (!running.get() || endpoint.isBlank()) return
+        runCatching {
+            val request = okhttp3.Request.Builder().url(endpoint).build()
+            coreSocket = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(1500, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .readTimeout(1500, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .writeTimeout(1500, java.util.concurrent.TimeUnit.MILLISECONDS)
                 .build()
-        }.getOrNull()
-    }
+                .newWebSocket(request, object : okhttp3.WebSocketListener() {
+                    override fun onOpen(webSocket: okhttp3.WebSocket, response: okhttp3.Response) {
+                        if (!running.get()) return
+                        webSocket.send(
+                            JSONObject()
+                                .put("type", "hello")
+                                .put("protocol", 4)
+                                .put("voice_id", voiceId)
+                                .put("sample_rate", 16_000)
+                                .put("continuous_audio", true)
+                                .put("full_duplex", true)
+                                .toString()
+                        )
+                        onState("core_connected_local_voice_active")
+                    }
 
-    private fun stopRecorder() {
-        recorder?.let { runCatching { it.stop() }; runCatching { it.release() } }
-        recorder = null
-        echoCanceler?.release()
-        echoCanceler = null
-    }
+                    override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
+                        if (running.get()) onState("local_voice_active")
+                    }
 
-    private fun stopPlayback() {
-        playbackQueue.clear()
-        track?.let { runCatching { it.pause() }; runCatching { it.flush() }; runCatching { it.release() } }
-        track = null
-        tomSpeaking = false
-    }
-
-    private fun rms(buffer: ShortArray, count: Int): Float {
-        if (count <= 0) return 0f
-        var sum = 0.0
-        for (i in 0 until count) {
-            val value = buffer[i] / 32768.0
-            sum += value * value
+                    override fun onClosed(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
+                        if (running.get()) onState("local_voice_active")
+                    }
+                })
+        }.onFailure {
+            if (running.get()) onState("local_voice_active")
         }
-        return sqrt(sum / count).toFloat()
-    }
-
-    private fun shortsToBytes(buffer: ShortArray, count: Int): ByteArray {
-        val out = ByteArray(count * 2)
-        for (i in 0 until count) {
-            val value = buffer[i].toInt()
-            out[i * 2] = (value and 0xff).toByte()
-            out[i * 2 + 1] = ((value ushr 8) and 0xff).toByte()
-        }
-        return out
     }
 }
