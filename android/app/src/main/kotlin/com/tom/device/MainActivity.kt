@@ -17,6 +17,9 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 
 class MainActivity : Activity() {
     private lateinit var root: FrameLayout
@@ -25,13 +28,21 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private var voiceLoop: TomVoiceLoop? = null
     private var selectedVoice = "tom_m1"
+    private var splashHandler: Handler? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = Color.TRANSPARENT
-        window.navigationBarColor = Color.rgb(238, 245, 249)
-        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-        setContentView(buildShell())
+        window.statusBarColor = Color.WHITE
+        window.navigationBarColor = Color.WHITE
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+
+        root = FrameLayout(this).apply { setBackgroundColor(Color.rgb(239, 247, 252)) }
+        setContentView(root)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            view.updatePadding(left = bars.left, top = bars.top, right = bars.right, bottom = bars.bottom)
+            insets
+        }
         showSplash()
     }
 
@@ -41,349 +52,237 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        splashHandler?.removeCallbacksAndMessages(null)
+        splashHandler = null
         voiceLoop?.stop()
         voiceLoop = null
         super.onDestroy()
     }
 
-    private fun buildShell(): View {
-        root = FrameLayout(this)
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun showSplash() {
+        root.removeAllViews()
+        val splash = FrameLayout(this).apply { setBackgroundColor(Color.rgb(239, 247, 252)) }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(28), dp(28), dp(28), dp(28))
+        }
+        box.addView(TomGlassUi.logo(this, dp(132)), LinearLayout.LayoutParams(dp(132), dp(132)))
+        box.addView(TomGlassUi.title(this, "TOM", 40f).apply { gravity = Gravity.CENTER; includeFontPadding = false }, LinearLayout.LayoutParams(-1, dp(50)).apply { topMargin = dp(14) })
+        box.addView(TomGlassUi.body(this, "Observe  •  Understand  •  Assist").apply { gravity = Gravity.CENTER; includeFontPadding = false }, LinearLayout.LayoutParams(-1, dp(28)).apply { topMargin = dp(4) })
+        splash.addView(box, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
+        root.addView(splash, FrameLayout.LayoutParams(-1, -1))
+
+        box.alpha = 0f; box.scaleX = .94f; box.scaleY = .94f
+        box.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(520).start()
+        splashHandler = Handler(Looper.getMainLooper())
+        splashHandler!!.postDelayed({
+            if (!isFinishing) splash.animate().alpha(0f).setDuration(300).withEndAction { if (!isFinishing) showHome() }.start()
+        }, 1050)
+    }
+
+    private fun buildShell() {
+        root.removeAllViews()
         val shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = TomGlassUi.weatherBackground()
         }
+
         val header = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(20, 18, 20, 10)
-            addView(TomGlassUi.logo(this@MainActivity, 48), LinearLayout.LayoutParams(48, 48))
-            val titleBox = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(13, 0, 0, 0)
-                addView(TomGlassUi.title(this@MainActivity, "TOM", 25f), LinearLayout.LayoutParams(-1, 31))
-                addView(TomGlassUi.body(this@MainActivity, "Your personal device intelligence"), LinearLayout.LayoutParams(-1, 23))
-            }
-            addView(titleBox, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(TomGlassUi.iconButton(this@MainActivity, "⚙", ::showSettings), LinearLayout.LayoutParams(48, 48))
+            setPadding(dp(18), dp(14), dp(18), dp(10))
         }
+        header.addView(TomGlassUi.logo(this, dp(44)), LinearLayout.LayoutParams(dp(44), dp(44)))
+        val titleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
+        titleBox.addView(TomGlassUi.title(this, "TOM", 22f).apply { includeFontPadding = false }, LinearLayout.LayoutParams(-1, dp(27)))
+        titleBox.addView(TomGlassUi.body(this, "Personal device intelligence").apply { includeFontPadding = false }, LinearLayout.LayoutParams(-1, dp(20)))
+        header.addView(titleBox, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(12) })
+        header.addView(TomGlassUi.iconButton(this, "⚙", ::showSettings), LinearLayout.LayoutParams(dp(48), dp(48)))
         shell.addView(header, LinearLayout.LayoutParams(-1, -2))
-        content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(18, 2, 18, 20) }
+
+        content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(2), dp(18), dp(22))
+        }
         shell.addView(ScrollView(this).apply {
             isFillViewport = true
-            addView(content)
             clipToPadding = false
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+            addView(content, LinearLayout.LayoutParams(-1, -2))
         }, LinearLayout.LayoutParams(-1, 0, 1f))
+
         nav = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(10, 8, 10, 10)
-            background = TomGlassUi.surface(this@MainActivity, 28f, Color.argb(244, 255, 255, 255))
+            setPadding(dp(8), dp(7), dp(8), dp(8))
+            background = TomGlassUi.surface(this@MainActivity, 26f, Color.argb(235, 255, 255, 255))
         }
-        shell.addView(nav, LinearLayout.LayoutParams(-1, 82))
+        shell.addView(nav, LinearLayout.LayoutParams(-1, dp(78)))
         root.addView(shell, FrameLayout.LayoutParams(-1, -1))
-        return root
     }
 
-    private fun showSplash() {
-        val splash = FrameLayout(this).apply { setBackgroundColor(Color.rgb(235, 245, 251)) }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            addView(TomGlassUi.logo(this@MainActivity, 116), LinearLayout.LayoutParams(116, 116))
-            addView(TomGlassUi.title(this@MainActivity, "TOM", 42f).apply { gravity = Gravity.CENTER; setPadding(0, 14, 0, 0) }, LinearLayout.LayoutParams(-1, 60))
-            addView(TomGlassUi.body(this@MainActivity, "Observe • Understand • Assist").apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, 34))
-        }
-        splash.addView(box, FrameLayout.LayoutParams(-1, -1))
-        root.addView(splash, FrameLayout.LayoutParams(-1, -1))
-        box.alpha = 0f; box.scaleX = .88f; box.scaleY = .88f
-        box.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(600).start()
-        Handler(Looper.getMainLooper()).postDelayed({
-            splash.animate().alpha(0f).setDuration(420).withEndAction {
-                root.removeView(splash); showHome()
-            }.start()
-        }, 1100)
+    private fun showPage(selected: Int, title: String, subtitle: String, builder: () -> Unit) {
+        if (!::content.isInitialized || root.childCount == 0) buildShell()
+        content.removeAllViews()
+        setNav(selected)
+        add(TomGlassUi.title(this, title, 30f).apply { includeFontPadding = false }, 4)
+        add(TomGlassUi.body(this, subtitle).apply { includeFontPadding = false; setLineSpacing(0f, 1.18f) }, 6)
+        builder()
     }
 
     private fun add(view: View, top: Int = 12) {
-        content.addView(view, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, top, 0, 0) })
+        content.addView(view, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(top) })
         TomGlassUi.fadeIn(view)
-    }
-
-    private fun heading(title: String, subtitle: String = "") {
-        add(TomGlassUi.title(this, title, 30f), 4)
-        if (subtitle.isNotBlank()) add(TomGlassUi.body(this, subtitle), 4)
     }
 
     private fun setNav(selected: Int) {
         nav.removeAllViews()
-        listOf(Triple("⌂", "Home", 0), Triple("◉", "Voice", 1), Triple("◌", "Connect", 2), Triple("☷", "More", 3)).forEach { item ->
-            nav.addView(TomGlassUi.navItem(this, item.first, item.second, selected == item.third) {
-                when (item.third) { 0 -> showHome(); 1 -> showVoice(); 2 -> showConnection(); else -> showMore() }
-            }, LinearLayout.LayoutParams(0, 66, 1f).apply { setMargins(3, 0, 3, 0) })
+        val items = listOf("⌂" to "Home", "◉" to "Voice", "◌" to "Device", "☷" to "More")
+        items.forEachIndexed { index, pair ->
+            nav.addView(TomGlassUi.navItem(this, pair.first, pair.second, selected == index) {
+                when (index) {
+                    0 -> showHome()
+                    1 -> showVoice()
+                    2 -> showDevice()
+                    else -> showMore()
+                }
+            }, LinearLayout.LayoutParams(0, dp(62), 1f).apply { setMargins(dp(3), 0, dp(3), 0) })
         }
     }
 
     private fun showHome() {
-        content.removeAllViews(); setNav(0)
-        heading("Good to see you", "A calm Android-native control center for your private AI companion.")
-        val hero = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(24, 22, 24, 24)
-            background = TomGlassUi.surface(this@MainActivity, 30f, Color.argb(235, 245, 250, 253))
-            addView(TomGlassUi.body(this@MainActivity, "TOM STATUS"), LinearLayout.LayoutParams(-1, 22))
-            addView(TomGlassUi.title(this@MainActivity, if (isAccessibilityEnabled()) "Ready" else "Almost ready", 42f), LinearLayout.LayoutParams(-1, 55))
-            addView(TomGlassUi.body(this@MainActivity, if (isAccessibilityEnabled()) "Device bridge is available. Start a voice session or connect your Core." else "Grant the capabilities you actually want. Android stays in control of every special permission."), LinearLayout.LayoutParams(-1, -2))
-            status = TomGlassUi.body(this@MainActivity, ""); status.setPadding(0, 13, 0, 0)
-            addView(status, LinearLayout.LayoutParams(-1, -2))
+        showPage(0, "Good to see you", "A calm control center for your private AI companion.") {
+            val hero = TomGlassUi.card(this, "TOM STATUS", "Checking Android capabilities and the local voice bridge…", null, null)
+            add(hero, 18)
+            status = TomGlassUi.body(this, "")
+            status.setTextColor(TomGlassUi.brown)
+            status.setPadding(dp(20), 0, dp(20), 0)
+            content.addView(status, LinearLayout.LayoutParams(-1, dp(28)))
+            refreshStatus()
+
+            add(TomGlassUi.card(this, "Live voice", "Real microphone → WebSocket Core → ASR/reasoning → streaming speech. Voice can be interrupted while TOM is speaking.", "Open voice", ::showVoice), 10)
+            add(TomGlassUi.card(this, "Device abilities", "Accessibility, notifications, screen capture, camera and overlay are independent Android capabilities. Grant only what you need.", "Open device controls", ::showDevice))
+            add(TomGlassUi.card(this, "Secure connection", "Pairing and transport are separate from task success. Production actions must be verified after execution.", "Connection status", ::showDevice))
+            add(TomGlassUi.section(this, "QUICK ACTIONS"), 18)
+            add(TomGlassUi.button(this, "Permission center", ::showDevice), 4)
+            add(TomGlassUi.button(this, "Choose TOM voice", ::showVoice), 7)
+            add(TomGlassUi.button(this, "Settings", ::showSettings), 7)
         }
-        add(hero, 16); refreshStatus()
-        add(TomGlassUi.card(this, "Live voice", "Natural microphone → ASR → reasoning → expressive streaming speech. Barge-in is designed to interrupt TOM without waiting for a sentence to finish.", "Open voice", ::showVoice), 18)
-        add(TomGlassUi.card(this, "Device abilities", "Accessibility, notifications, screen capture, camera and overlay are separated so you can approve only what you need.", "Permission center", ::showPermissions))
-        add(TomGlassUi.card(this, "Secure connection", "Pair this phone with a trusted TOM Core and keep production credentials inside Android Keystore rather than the UI.", "Connection", ::showConnection))
-        add(TomGlassUi.section(this, "QUICK CONTROLS"), 20)
-        add(TomGlassUi.button(this, "Review permissions", ::showPermissions), 5)
-        add(TomGlassUi.button(this, "Choose TOM voice", ::showVoice), 8)
-        add(TomGlassUi.button(this, "Open settings", ::showSettings), 8)
     }
 
     private fun showVoice() {
-        content.removeAllViews(); setNav(1)
-        heading("TOM voice", "Choose the personality of the voice loop. Every option is explicit, cancellable and connected to the same real transport.")
-        add(TomGlassUi.card(this, "Listening mode", "Continuous audio frames are delivered to the Core while the session is active. Neural VAD and turn prediction decide boundaries; local Android echo cancellation reduces speaker feedback.", null, null), 16)
-        add(TomGlassUi.section(this, "VOICE LIBRARY"), 18)
-        voiceCard("tom_m1", "TOM • Rohit", "Warm, balanced Indian male voice • natural conversational delivery", "Hindi • Hinglish • English")
-        voiceCard("tom_m2", "TOM • Aman", "Slightly deeper, calm male voice • focused and composed", "Hindi • English")
-        voiceCard("tom_f1", "TOM • Divya", "Warm Indian female voice • friendly and expressive", "Hindi • Hinglish • English")
-        add(TomGlassUi.section(this, "VOICE BEHAVIOUR"), 20)
-        add(TomGlassUi.card(this, "Natural pacing", "TOM can vary speaking rate around a stable baseline, insert sentence and phrase pauses, and adapt energy without using random fake effects.", null, null))
-        add(TomGlassUi.card(this, "Emotion", "Warm, calm, curious, empathetic, concerned, happy, amused, excited and serious delivery are represented as explicit style signals for the TTS adapter.", null, null))
-        add(TomGlassUi.card(this, "Barge-in", "When you begin speaking while TOM is talking, the Android loop sends an interrupt event and immediately drains playback. The server remains authoritative for turn completion.", null, null))
-        add(TomGlassUi.card(this, "Audio pipeline", "16 kHz mono PCM input → live WebSocket → ASR/prosody/turn prediction → response → 24 kHz PCM output. No fake prerecorded response is used by the Android loop.", "Start selected voice", ::startVoice), 14)
-        add(TomGlassUi.section(this, "VOICE SETTINGS"), 20)
-        add(TomGlassUi.button(this, "Open full voice settings", ::showVoiceSettings), 5)
-        add(TomGlassUi.button(this, "Test microphone permission", { requestPermission(Manifest.permission.RECORD_AUDIO, 20) }), 8)
-    }
-
-    private fun voiceCard(id: String, name: String, desc: String, languages: String) {
-        val selected = id == selectedVoice
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(18, 16, 14, 16)
-            background = TomGlassUi.surface(this@MainActivity, 25f, if (selected) Color.rgb(232, 243, 251) else Color.WHITE)
-            addView(TomGlassUi.logo(this@MainActivity, 48), LinearLayout.LayoutParams(48, 48))
-            val info = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL; setPadding(13, 0, 8, 0)
-                addView(TomGlassUi.title(this@MainActivity, name, 17f), LinearLayout.LayoutParams(-1, 29))
-                addView(TomGlassUi.body(this@MainActivity, desc), LinearLayout.LayoutParams(-1, -2))
-                addView(TomGlassUi.body(this@MainActivity, languages), LinearLayout.LayoutParams(-1, -2))
-            }
-            addView(info, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(TomGlassUi.button(this@MainActivity, if (selected) "Selected" else "Choose", { selectedVoice = id; showVoice() }, selected), LinearLayout.LayoutParams(105, 50))
-            isClickable = true; setOnClickListener { selectedVoice = id; showVoice() }
+        showPage(1, "TOM voice", "A real-time voice surface with explicit start/stop control.") {
+            add(TomGlassUi.card(this, "Current voice", voiceName(selectedVoice) + "\n\n16 kHz mono input • live WebSocket • 24 kHz mono output", null, null), 18)
+            add(TomGlassUi.section(this, "VOICE LIBRARY"), 14)
+            voiceChoice("tom_m1", "TOM • Rohit", "Warm, balanced Indian male voice", "Hindi • Hinglish • English")
+            voiceChoice("tom_m2", "TOM • Aman", "Deeper, calm conversational voice", "Hindi • English")
+            voiceChoice("tom_f1", "TOM • Divya", "Warm, expressive Indian female voice", "Hindi • Hinglish • English")
+            add(TomGlassUi.section(this, "LIVE SESSION"), 18)
+            add(TomGlassUi.card(this, "Barge-in", "When you speak while TOM is talking, the Android loop can interrupt playback instead of waiting for TTS to finish.", null, null))
+            add(TomGlassUi.button(this, "Start selected voice", ::startVoice, true), 12)
+            add(TomGlassUi.button(this, "Stop voice", { voiceLoop?.stop(); voiceLoop = null; updateVoiceStatus("Voice stopped") }), 8)
+            add(TomGlassUi.button(this, "Microphone permission", { requestPermission(Manifest.permission.RECORD_AUDIO, 20) }), 8)
+            add(TomGlassUi.section(this, "SESSION STATUS"), 18)
+            add(TomGlassUi.card(this, "Transport", "${BuildConfig.TOM_VOICE_WS_URL}\n\nA configured endpoint is not proof of a successful connection. Runtime state is shown here only when the real loop reports it.", null, null))
         }
-        add(card, 8)
     }
 
-    private fun showVoiceSettings() {
-        content.removeAllViews(); setNav(1)
-        heading("Voice settings", "Fine control over how TOM sounds and when it should speak.")
-        add(TomGlassUi.section(this, "CONVERSATION"), 16)
-        add(TomGlassUi.card(this, "Speaking rate", "Default: natural. Slow delivery is preferred for explanations and emotional moments; faster delivery is reserved for concise confirmations.", null, null))
-        add(TomGlassUi.card(this, "Pitch", "Pitch changes are intentionally subtle. The system should preserve voice identity instead of turning every response into an effect.", null, null))
-        add(TomGlassUi.card(this, "Warmth", "Warmth controls prosody and descriptive style for supported TTS models. It does not alter the meaning or system policy.", null, null))
-        add(TomGlassUi.card(this, "Backchannels", "Optional short acknowledgement cues can be enabled in the Core. They must never interrupt your own speech or pretend TOM understood something it did not.", null, null))
-        add(TomGlassUi.section(this, "LANGUAGE"), 20)
-        add(TomGlassUi.card(this, "Hindi", "Native Hindi output when the model supports it. Devanagari remains untouched in the text pipeline.", null, null))
-        add(TomGlassUi.card(this, "Hinglish", "Mixed Hindi-English conversation uses the same semantic response while the TTS adapter chooses an appropriate multilingual speaker.", null, null))
-        add(TomGlassUi.card(this, "English", "Clear conversational English with the selected TOM voice profile.", null, null))
-        add(TomGlassUi.section(this, "RESET"), 20)
-        add(TomGlassUi.button(this, "Reset voice preferences", { selectedVoice = "tom_m1"; showVoice() }))
+    private fun voiceChoice(id: String, name: String, desc: String, languages: String) {
+        val selected = id == selectedVoice
+        add(TomGlassUi.card(this, name, "$desc\n$languages", if (selected) "Selected" else "Choose") {
+            selectedVoice = id
+            showVoice()
+        }, 8)
+    }
+
+    private fun voiceName(id: String) = when (id) {
+        "tom_m2" -> "TOM • Aman"
+        "tom_f1" -> "TOM • Divya"
+        else -> "TOM • Rohit"
     }
 
     private fun startVoice() {
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) { requestPermission(Manifest.permission.RECORD_AUDIO, 20); return }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermission(Manifest.permission.RECORD_AUDIO, 20)
+            return
+        }
         voiceLoop?.stop()
         voiceLoop = TomVoiceLoop(this, BuildConfig.TOM_VOICE_WS_URL, voiceId = selectedVoice,
-            onState = { state -> runOnUiThread { if (::status.isInitialized) status.text = "Voice • $state" } },
-            onTranscript = { text -> runOnUiThread { if (::status.isInitialized) status.text = "You • $text" } },
-            onError = { error -> runOnUiThread { if (::status.isInitialized) status.text = "Voice error • $error" } })
-        voiceLoop?.start(); showVoice()
+            onState = { state -> runOnUiThread { updateVoiceStatus("Voice • $state") } },
+            onTranscript = { text -> runOnUiThread { updateVoiceStatus("You • $text") } },
+            onError = { error -> runOnUiThread { updateVoiceStatus("Voice error • $error") } })
+        voiceLoop?.start()
+        updateVoiceStatus("Voice starting…")
     }
 
-    private fun showConnection() {
-        content.removeAllViews(); setNav(2)
-        heading("Device connection", "A calm surface for the serious part: secure pairing and live transport health.")
-        add(TomGlassUi.card(this, "Current endpoint", "${BuildConfig.TOM_VOICE_WS_URL}\n\nDevelopment builds may use an emulator/LAN endpoint. Production should use WSS, authenticated pairing and certificate-validated transport.", null, null), 16)
-        add(TomGlassUi.card(this, "Secure pairing", "The production pairing flow should issue a short-lived code or QR, bind it to this device, then store the resulting credential in Android Keystore. Never display long-lived secrets on this screen.", "Pair device", ::showPairingInfo))
-        add(TomGlassUi.card(this, "Transport health", "A connection is not success by itself. TOM tracks authenticated session state, observation freshness, action acknowledgements and post-action verification separately.", "Readiness check", ::showReadyCheck))
-        add(TomGlassUi.section(this, "NETWORK BEHAVIOUR"), 20)
-        add(TomGlassUi.card(this, "Reconnect policy", "Temporary network loss may reconnect with backoff. A reconnect never replays a consequential action. Unknown state stays UNKNOWN until fresh observation verifies it.", null, null))
-        add(TomGlassUi.card(this, "Privacy on transport", "Only capabilities required by the active session should be streamed. Sensitive device data is not included merely because the transport is connected.", null, null))
-        add(TomGlassUi.card(this, "LAN testing", "For a physical phone, replace the emulator host in the build configuration with the Core machine's LAN address. Keep both devices on a trusted network during development.", null, null))
-        add(TomGlassUi.section(this, "DIAGNOSTICS"), 20)
-        add(TomGlassUi.button(this, "Open Android network settings", { startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) }), 5)
-        add(TomGlassUi.button(this, "Run local readiness check", ::showReadyCheck), 8)
+    private fun updateVoiceStatus(value: String) {
+        if (::status.isInitialized) status.text = value
+    }
+
+    private fun showDevice() {
+        showPage(2, "Device controls", "Real Android permissions and special access. Android remains authoritative.") {
+            add(TomGlassUi.section(this, "CAPABILITIES"), 18)
+            permissionCard("Microphone", "Live voice input and barge-in.", checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED, "Allow microphone") { requestPermission(Manifest.permission.RECORD_AUDIO, 20) }
+            permissionCard("Accessibility", "Semantic UI observation and controlled device actions.", isAccessibilityEnabled(), "Open Accessibility") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            permissionCard("Notification access", "Read notifications only when explicitly enabled.", isNotificationAccessEnabled(), "Open notification access") { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+            permissionCard("Screen capture", "Fresh pixels for visual grounding and verification. Android asks for consent per capture session.", false, "Grant screen access") { requestScreenCapture() }
+            permissionCard("Camera", "Explicit visual or video assistance.", checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED, "Allow camera") { requestPermission(Manifest.permission.CAMERA, 21) }
+            permissionCard("Floating controls", "Optional overlay controls managed by Android.", Settings.canDrawOverlays(this), "Open overlay access") { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
+            add(TomGlassUi.section(this, "CONNECTION"), 18)
+            add(TomGlassUi.card(this, "Core endpoint", BuildConfig.TOM_VOICE_WS_URL + "\n\nDevelopment can use an emulator/LAN endpoint. Production should use authenticated WSS and protected credentials.", null, null))
+            add(TomGlassUi.card(this, "Verification", "A network ACK is not task success. TOM should obtain fresh post-action evidence and keep UNKNOWN as a valid state.", null, null))
+        }
+    }
+
+    private fun permissionCard(title: String, desc: String, granted: Boolean, action: String, onClick: () -> Unit) {
+        add(TomGlassUi.card(this, title, desc, if (granted) "Enabled • Manage" else "Not enabled • $action") {
+            onClick()
+        }, 8)
     }
 
     private fun showMore() {
-        content.removeAllViews(); setNav(3)
-        heading("More", "Everything important that should not be hidden behind a tiny overflow menu.")
-        add(TomGlassUi.card(this, "Permissions & privacy", "Review every sensitive Android capability, why it exists, and how TOM handles it.", "Open permission center", ::showPermissions), 16)
-        add(TomGlassUi.card(this, "Appearance", "Choose the calm weather-inspired visual system and motion behaviour.", "Appearance", ::showAppearance))
-        add(TomGlassUi.card(this, "Safety rules", "Consequential actions, uncertainty, approvals, retries and recovery are explicit.", "Safety", ::showSafety))
-        add(TomGlassUi.card(this, "Privacy policy", "A detailed long-form explanation of device data, voice data, permissions, transport, retention and deletion.", "Privacy policy", { showLongPage("Privacy policy", privacySections()) }))
-        add(TomGlassUi.card(this, "Open-source licenses", "TOM's license plus third-party dependency notices and model licensing responsibilities.", "Licenses", { showLongPage("Licenses & notices", licenseSections()) }))
-        add(TomGlassUi.card(this, "Help & diagnostics", "Troubleshooting for microphone, accessibility, WebSocket, model loading, playback and Android permissions.", "Help", { showLongPage("Help & diagnostics", helpSections()) }))
-        add(TomGlassUi.card(this, "About TOM", "Build identity, architecture, voice stack and project principles.", "About", { showLongPage("About TOM", aboutSections()) }))
-        add(TomGlassUi.card(this, "Settings", "Voice, connection, notifications, privacy and reset controls.", "Open settings", ::showSettings))
+        showPage(3, "More", "Security, privacy, appearance and diagnostics without hiding important controls.") {
+            add(TomGlassUi.card(this, "Appearance", "Weather-inspired sky tones, liquid-glass surfaces, restrained motion and native Android spacing.", "Open appearance", ::showAppearance), 18)
+            add(TomGlassUi.card(this, "Safety rules", "Observation → planning → execution → verification. Consequential actions remain approval-gated.", "Safety", { showTextPage("Safety rules", safetyText()) }))
+            add(TomGlassUi.card(this, "Privacy", "Microphone, notifications, screen pixels and accessibility data are sensitive and should be minimized and protected.", "Privacy", { showTextPage("Privacy", privacyText()) }))
+            add(TomGlassUi.card(this, "Help & diagnostics", "Troubleshoot microphone, accessibility, WebSocket, permissions and model readiness.", "Diagnostics", { showTextPage("Help & diagnostics", helpText()) }))
+            add(TomGlassUi.card(this, "About TOM", "Native Android bridge, real voice transport, explicit permissions and verifiable device actions.", "About", { showTextPage("About TOM", aboutText()) }))
+            add(TomGlassUi.button(this, "Settings", ::showSettings), 14)
+        }
     }
 
     private fun showSettings() {
-        content.removeAllViews(); setNav(3)
-        heading("Settings", "Native Android settings-style controls with large touch targets and clear explanations.")
-        add(TomGlassUi.section(this, "VOICE"), 16)
-        add(TomGlassUi.button(this, "Selected voice: $selectedVoice", ::showVoiceSettings), 5)
-        add(TomGlassUi.button(this, "Voice library", ::showVoice), 8)
-        add(TomGlassUi.section(this, "DEVICE"), 20)
-        add(TomGlassUi.button(this, "Permission center", ::showPermissions), 5)
-        add(TomGlassUi.button(this, "Accessibility settings", ::openAccessibility), 8)
-        add(TomGlassUi.button(this, "Notification access", { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }), 8)
-        add(TomGlassUi.section(this, "CONNECTION"), 20)
-        add(TomGlassUi.button(this, "Connection & pairing", ::showConnection), 5)
-        add(TomGlassUi.section(this, "APP"), 20)
-        add(TomGlassUi.button(this, "Appearance & motion", ::showAppearance), 5)
-        add(TomGlassUi.button(this, "Privacy policy", { showLongPage("Privacy policy", privacySections()) }), 8)
-        add(TomGlassUi.button(this, "Licenses & notices", { showLongPage("Licenses & notices", licenseSections()) }), 8)
-        add(TomGlassUi.button(this, "About TOM", { showLongPage("About TOM", aboutSections()) }), 8)
-        add(TomGlassUi.section(this, "RESET"), 20)
-        add(TomGlassUi.card(this, "Reset local preferences", "This build keeps the selected voice in memory only. Production preferences should be stored in encrypted app storage and reset here without touching server data.", "Reset voice", { selectedVoice = "tom_m1"; showSettings() }))
+        showPage(3, "Settings", "Clear Android-native controls with large touch targets and no hidden state.") {
+            add(TomGlassUi.section(this, "VOICE"), 18)
+            add(TomGlassUi.button(this, "Selected voice: ${voiceName(selectedVoice)}", ::showVoice), 5)
+            add(TomGlassUi.section(this, "DEVICE"), 18)
+            add(TomGlassUi.button(this, "Permission center", ::showDevice), 5)
+            add(TomGlassUi.button(this, "Accessibility settings", { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }), 8)
+            add(TomGlassUi.button(this, "Notification access", { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }), 8)
+            add(TomGlassUi.section(this, "APPEARANCE"), 18)
+            add(TomGlassUi.button(this, "Weather-inspired light theme", ::showAppearance), 5)
+            add(TomGlassUi.section(this, "RESET"), 18)
+            add(TomGlassUi.button(this, "Reset selected voice", { selectedVoice = "tom_m1"; showSettings() }), 5)
+        }
     }
 
     private fun showAppearance() {
-        content.removeAllViews(); setNav(3)
-        heading("Appearance", "Inspired by polished weather apps: airy surfaces, atmospheric backgrounds, oversized status, soft motion and strong readability.")
-        add(TomGlassUi.card(this, "Weather-inspired", "The design uses sky/cloud neutrals, white translucent surfaces, a restrained blue accent and warm status highlights. It intentionally avoids a generic black cyberpunk dashboard.", null, null), 16)
-        add(TomGlassUi.card(this, "Native Android feel", "Large touch targets, edge-aware spacing, system typography, light status/navigation bars, scrollable settings pages and clear hierarchy are used instead of web-like controls.", null, null))
-        add(TomGlassUi.card(this, "Motion", "Buttons compress on touch, pages fade upward, the splash scales gently, and important status elements can pulse without becoming distracting.", null, null))
-        add(TomGlassUi.card(this, "Accessibility", "High-contrast text, predictable navigation order, focusable controls and generous tap areas are preferred. Motion should remain secondary to content.", null, null))
-        add(TomGlassUi.section(this, "THEME"), 20)
-        add(TomGlassUi.button(this, "Light sky • active", {}), 5)
-        add(TomGlassUi.button(this, "Reduce motion (system setting)", { showTextPage("Motion", "Android system animation settings remain authoritative. TOM keeps motion short and functional so the interface still works when system animation scales are reduced.") }), 8)
-        add(TomGlassUi.section(this, "BRAND"), 20)
-        add(TomGlassUi.card(this, "TOM mark", "The app mark is drawn locally as a simple atmospheric signal: a curved communication path plus a warm status point inside a clean circular field. No external image asset is required for the core icon.", null, null))
-    }
-
-    private fun showPermissions() {
-        content.removeAllViews(); setNav(3)
-        heading("Permission center", "One capability at a time. Android's own consent screens remain the source of truth.")
-        add(TomGlassUi.card(this, "Microphone", "Used by the live voice loop. TOM needs RECORD_AUDIO to capture PCM from the microphone. Stop the voice session to release the recorder.", "Allow microphone", { requestPermission(Manifest.permission.RECORD_AUDIO, 20) }), 16)
-        add(TomGlassUi.card(this, "Accessibility", "Used for semantic UI observation and explicitly permitted actions. Enable only if you want device-control features.", "Open Accessibility", ::openAccessibility))
-        add(TomGlassUi.card(this, "Notifications", "The notification listener can read notifications only after you explicitly enable the Android service. It should be disabled if you do not need notification assistance.", "Open notification access", { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }))
-        add(TomGlassUi.card(this, "Screen capture", "MediaProjection gives TOM actual pixels for visual verification. Android displays a consent dialog for every capture session.", "Request screen capture", ::requestScreenCapture))
-        add(TomGlassUi.card(this, "Camera", "Reserved for explicit camera/video assistance. It is not needed for normal text or voice use.", "Allow camera", { requestPermission(Manifest.permission.CAMERA, 21) }))
-        add(TomGlassUi.card(this, "Overlay", "Optional floating controls. Android manages this as special access and TOM should never silently grant it.", "Open overlay access", { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }))
-        add(TomGlassUi.section(this, "PERMISSION PRINCIPLES"), 22)
-        add(TomGlassUi.card(this, "Least privilege", "A capability should be requested only when a user action needs it. A connected Core does not automatically justify every Android permission.", null, null))
-        add(TomGlassUi.card(this, "Revocation", "You can revoke permissions from Android Settings. TOM must handle missing access as a normal state and should not loop on permission requests.", null, null))
-        add(TomGlassUi.card(this, "Sensitive data", "Microphone, notifications, screen pixels and accessibility trees can contain highly sensitive information. Production deployments should apply authentication, minimization and retention limits at the Core as well.", null, null))
-    }
-
-    private fun showSafety() = showLongPage("Safety rules", safetySections())
-
-    private fun showTextPage(title: String, text: String) = showLongPage(title, listOf("Overview" to text, "How it works" to "TOM separates observation, planning, execution and verification. A successful network response is not treated as proof that a consequential device action actually happened.", "User control" to "The Android app keeps powerful capabilities behind explicit system permissions and user-facing controls."))
-
-    private fun showLongPage(title: String, sections: List<Pair<String, String>>) {
-        content.removeAllViews(); setNav(3)
-        heading(title, "Detailed reference • scroll freely • no hidden sections")
-        sections.forEachIndexed { index, section ->
-            add(TomGlassUi.section(this, "${index + 1}. ${section.first}"), if (index == 0) 16 else 24)
-            add(TomGlassUi.card(this, section.first, section.second, null, null), 5)
+        showPage(3, "Appearance", "A polished weather-inspired Android interface: atmospheric, spacious and readable.") {
+            add(TomGlassUi.card(this, "Atmosphere", "Soft sky neutrals, white translucent surfaces, subtle borders and restrained blue-gray accents create the visual foundation.", null, null), 18)
+            add(TomGlassUi.card(this, "Liquid glass", "Glass is used as a surface treatment, not as a blur-heavy effect. Content remains readable and controls keep clear boundaries.", null, null))
+            add(TomGlassUi.card(this, "Motion", "Short fade/slide transitions and tiny press compression keep interaction smooth without blocking the UI.", null, null))
+            add(TomGlassUi.card(this, "Layout rules", "Scrollable content, wrap-content text, generous horizontal margins and system-bar-aware insets prevent clipping and overlap across phone sizes.", null, null))
         }
-        add(TomGlassUi.button(this, "Back to More", ::showMore), 26)
     }
 
-    private fun privacySections() = listOf(
-        "Scope" to "This Android app is a device-side bridge for TOM. It can interact with microphones, accessibility services, notifications, screen capture, camera and network transport only when the relevant Android capability is enabled. The app should not infer consent from installation alone.",
-        "Microphone & voice" to "During a live voice session, the microphone produces PCM audio frames for speech recognition, prosody analysis, turn prediction and response generation. Audio handling must follow the active session boundary. When the session stops, the recorder and playback objects are released.",
-        "Accessibility data" to "Accessibility trees may contain text, labels, buttons, account information and other sensitive UI state. TOM should observe only what is needed for the requested task and avoid persisting full UI trees unless a separate, explicit diagnostic workflow requires it.",
-        "Screen images" to "MediaProjection provides pixels for visual grounding. Android asks for user consent for the capture session. Screen images can contain passwords, messages, financial information and private photographs, so the Core should process them minimally and avoid unnecessary retention.",
-        "Notifications" to "If notification access is enabled, the notification listener can see notification content. This permission is optional. Users can revoke it at any time through Android Settings.",
-        "Camera" to "Camera access is intended for explicit visual or video-assistance workflows. It is not required for ordinary voice conversations and should remain disabled otherwise.",
-        "Network transport" to "Development builds may use a local WebSocket endpoint. Production deployments should use authenticated WSS, certificate validation, replay protection and short-lived device credentials. A network connection is not itself authorization for every action.",
-        "Retention" to "The Android bridge should keep ephemeral audio, pixels and UI observations in memory whenever possible. Server-side retention must be separately configured and documented. Logs should avoid secrets and unnecessary personal content.",
-        "Security" to "Production credentials belong in Android Keystore or an equivalent protected credential store. Never place long-lived secrets in source code, screenshots, chat messages or ordinary preferences. Device pairing should bind credentials to the intended phone.",
-        "User controls" to "The user can stop voice, revoke permissions, disable accessibility, disable notification access, stop screen capture and remove the app. TOM should treat revoked access as a normal state rather than trying to work around Android controls.",
-        "Sensitive contexts" to "Do not use autonomous device control in situations where a user cannot understand or supervise the consequences. High-impact account, payment, legal, medical or security actions should remain explicitly approved and verified.",
-        "Changes" to "Privacy documentation should be versioned whenever data handling, model routing, retention or permissions change. Production releases should identify the build and document material changes before deployment."
-    )
-
-    private fun licenseSections() = listOf(
-        "Project license" to "TOM's project code is intended to be distributed under the Apache License 2.0 as represented by the repository LICENSE file. The license text in the repository is the authoritative project notice.",
-        "Android components" to "The Android app uses AndroidX and Android platform APIs. Their respective licenses and notices remain applicable. Distribution builds should retain required third-party notices.",
-        "OkHttp" to "The voice transport uses OkHttp. OkHttp is an open-source project with its own license and notice requirements. Do not remove upstream copyright or license notices from a redistribution.",
-        "Voice models" to "TTS, ASR, VAD and turn-prediction models are separate intellectual-property artifacts. Their model cards and licenses govern redistribution, commercial use, gated access and attribution. A software license does not automatically license a model.",
-        "Indic Parler" to "The Indic Parler adapter is an integration layer. The exact upstream model and any gated model weights must be used according to the upstream model card, terms and license. Keep model provenance documented in production deployments.",
-        "Smart Turn" to "The Smart Turn ONNX integration is designed around the open upstream model family and its published terms. Keep the downloaded model's license and attribution alongside deployment artifacts.",
-        "Apache obligations" to "If you redistribute Apache-licensed code, retain the license, preserve copyright notices and include required NOTICE information when applicable. Modified files should be identifiable where the license requires it.",
-        "Trademark" to "Open-source licensing does not grant trademark rights. Names and logos may have separate brand restrictions. Use the repository's current branding policy when distributing modified builds.",
-        "No warranty" to "Open-source software is provided according to its license terms. Production deployments should independently test security, reliability, model quality, privacy and device compatibility before use.",
-        "Model downloads" to "The model downloader intentionally keeps gated-model instructions visible instead of embedding credentials. Accept upstream terms through the official provider when required and provide credentials through secure environment configuration.",
-        "Notices" to "A release-quality APK should ship with a complete third-party notices screen or document. This UI page is the product-facing summary; repository LICENSE and dependency metadata remain authoritative.",
-        "Build provenance" to "Record the source commit, model versions, dependency lock state and Android build version for each production artifact. This makes security reviews and bug reproduction practical."
-    )
-
-    private fun helpSections() = listOf(
-        "APK build" to "If the GitHub Android workflow fails, inspect the first Kotlin or Gradle compilation error. A later summary such as 'Build failed' is only the consequence. Re-run after the exact source error is fixed.",
-        "Ruff test" to "The Python CI has separate installation, pytest and Ruff stages. If installation succeeds and pytest passes but Ruff fails, the runtime tests are healthy and the failure is a static-style check. Run ruff check . locally or use the exact CI output.",
-        "Microphone" to "Confirm Android microphone permission, make sure another app is not exclusively holding the audio input, then start the voice session again. If the endpoint is unreachable, microphone capture can still initialize but the WebSocket will fail separately.",
-        "Voice playback" to "The Android loop expects 24 kHz mono PCM output from the Core. If the server sends a different codec or sample rate, playback may sound wrong. Keep audio format metadata explicit in the WebSocket protocol.",
-        "Barge-in" to "Barge-in depends on microphone frames continuing while TOM speaks. Android echo cancellation reduces feedback but is device-dependent. The server's VAD and turn predictor remain authoritative for conversational turn completion.",
-        "WebSocket" to "An emulator may reach the host through 10.0.2.2, while a physical phone normally needs the Core machine's LAN IP or DNS name. Production should use WSS and authenticated pairing rather than a plain local ws URL.",
-        "Accessibility" to "Open Android Settings → Accessibility → installed services and enable TOM. Android may display additional security warnings. TOM should not request or bypass this through another mechanism.",
-        "Notifications" to "Notification access is under Android's notification listener settings. If disabled, notification features should simply show unavailable rather than repeatedly requesting access.",
-        "Screen capture" to "MediaProjection consent is session-based. Start capture only after the user presses the control and accept the Android dialog. A previous grant should not be assumed to last forever.",
-        "Camera" to "Camera is not needed for voice. If camera assistance is used, grant CAMERA only when the feature requests it and release the camera when the feature ends.",
-        "Connection health" to "Use the readiness page to distinguish accessibility state, endpoint configuration and model availability. 'Connected' should never be displayed as 'task completed'. Verification happens after the action.",
-        "Model loading" to "If Indic Parler or another neural voice model fails, inspect model path, Python extra dependencies, upstream model terms and available RAM/VRAM. Keep optional model dependencies out of the minimal core installation."
-    )
-
-    private fun aboutSections() = listOf(
-        "What TOM is" to "TOM is a personal AI device bridge designed around observation, reasoning, controlled execution and verification. The Android app is the local surface through which a user grants capabilities and starts live interactions.",
-        "Design direction" to "The UI deliberately borrows the calm visual language of polished weather apps: large atmospheric status, airy cards, soft sky tones, clear information hierarchy and restrained motion. It is an inspiration for visual clarity, not a copy of any specific application.",
-        "Android architecture" to "The app uses native Android Activity/View APIs for predictable device behaviour. The shell contains a scrollable content area and a custom animated bottom navigation. Sensitive capabilities continue to flow through Android's own permission and special-access screens.",
-        "Voice architecture" to "The live loop captures 16 kHz mono PCM, sends continuous frames to a WebSocket Core, receives transcript/state events and streams 24 kHz PCM to AudioTrack. Android echo cancellation is enabled when the platform exposes it.",
-        "Turn-taking" to "The Core can combine neural VAD, prosody, transcript state and Smart Turn-style endpoint prediction. The Android side also detects local speech energy to issue a low-latency interruption signal when TOM is talking.",
-        "Expressive speech" to "The voice stack exposes explicit style signals such as warmth, emotion, pitch, speaking rate and pause cues. Expressiveness is intended to improve communication rather than fabricate certainty or manipulate a user.",
-        "Safety model" to "TOM distinguishes observation from execution and execution from verification. If post-action state is unknown, the correct state is UNKNOWN, not a blind retry. Consequential actions should remain approval-gated.",
-        "Open-source approach" to "Core runtime code should favour auditable, local or open components where practical. Optional model adapters remain modular so deployments can choose the hardware and licensing terms that fit them.",
-        "No fake demo layer" to "The Android voice control is wired to a real WebSocket, real AudioRecord and real AudioTrack. A UI status label is not treated as proof that a model answered. Production monitoring should expose real transport and model state.",
-        "Build identity" to "This development build uses application ID com.tom.device and a versioned Android build pipeline. Each release should record its source commit, model versions and dependency state.",
-        "Project principles" to "Private by default, explicit permissions, observable actions, verifiable outcomes, graceful uncertainty, real functionality over demo placeholders and a calm interface that does not get in the user's way.",
-        "Release readiness" to "Before public distribution, add signed release configuration, secure WSS pairing, encrypted credential storage, complete third-party notices, accessibility testing, device matrix testing and end-to-end voice/model tests on representative hardware."
-    )
-
-    private fun safetySections() = listOf(
-        "User authority" to "TOM assists the user; it does not silently become the owner of the device. Android permission prompts, special-access screens and user actions remain authoritative.",
-        "Observation first" to "Before acting, TOM should ground itself in fresh UI or API state. Stale observations should expire. Missing evidence is not evidence of success.",
-        "Approval gates" to "Payments, purchases, destructive deletes, messages, account changes and other consequential operations should require explicit approval unless the user has intentionally configured a narrowly scoped policy.",
-        "Transport ACK is not success" to "A WebSocket acknowledgement means a message was received or queued. It does not prove that the external side effect occurred. TOM must verify the post-action state.",
-        "Unknown state" to "If verification is unavailable, label the outcome UNKNOWN and stop. Never retry a consequential action merely because a confirmation did not arrive.",
-        "Interruptibility" to "Voice sessions must be stoppable. Barge-in should interrupt speech without waiting for TTS to finish. Device-control plans should also expose a clear stop path.",
-        "Least privilege" to "Only request the Android capability required for the active task. Accessibility, notifications, screen capture, camera, microphone and overlay should remain independently controllable.",
-        "No credential leakage" to "Never put API keys, pairing secrets, cookies, tokens or passwords in UI logs, screenshots, source control or model prompts. Use protected credential storage and redacted diagnostics.",
-        "External side effects" to "Sending a message, editing a document, changing an account setting or purchasing something can affect other people. TOM should state what it intends to do and verify what actually happened.",
-        "Recovery" to "When a tool fails, recover using fresh observation and an explicit plan. Do not chain retries indefinitely or repeat actions whose state cannot be determined.",
-        "Model uncertainty" to "ASR, vision, VAD, turn prediction and LLM outputs are probabilistic. A confident model response is not equivalent to verified device state.",
-        "Production checklist" to "Use WSS, authenticated pairing, Android Keystore, short-lived credentials, audit logs without secrets, explicit approvals, fresh verification, model version pinning and end-to-end tests before enabling autonomous device actions."
-    )
-
-    private fun showPairingInfo() = showTextPage("Secure pairing", "Pairing should be a short-lived, user-visible operation. The server issues a code or QR, the phone proves its identity, and the resulting credential is stored in Android Keystore. The app should never ask the user to paste a long-lived token into a normal text field.")
-
-    private fun showReadyCheck() = showLongPage("Readiness check", listOf(
-        "Accessibility" to if (isAccessibilityEnabled()) "ENABLED — Android has granted the accessibility service." else "NOT ENABLED — voice can still work, but UI observation/actions are unavailable.",
-        "Voice endpoint" to BuildConfig.TOM_VOICE_WS_URL,
-        "Selected voice" to selectedVoice,
-        "Microphone" to if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) "GRANTED" else "NOT GRANTED",
-        "Core requirements" to "The Core machine must have its ASR, reasoning model, turn prediction/VAD and TTS adapters configured. The Android app does not pretend those models exist merely because the UI is installed.",
-        "Production requirements" to "Use WSS, authenticated pairing, protected credentials, pinned model versions and post-action verification before enabling consequential device actions."
-    ))
+    private fun showTextPage(title: String, text: String) {
+        showPage(3, title, "TOM documentation") {
+            add(TomGlassUi.card(this, "Overview", text, null, null), 18)
+            add(TomGlassUi.button(this, "Back to More", ::showMore), 18)
+        }
+    }
 
     private fun refreshStatus() {
         if (!::status.isInitialized) return
@@ -395,7 +294,10 @@ class MainActivity : Activity() {
         services.split(':').any { it.contains(packageName, ignoreCase = true) }
     }.getOrDefault(false)
 
-    private fun openAccessibility() = startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+    private fun isNotificationAccessEnabled(): Boolean = runCatching {
+        val enabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: return false
+        enabled.split(':').any { it.contains(packageName, ignoreCase = true) }
+    }.getOrDefault(false)
 
     private fun requestPermission(permission: String, code: Int) {
         if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(permission), code)
@@ -403,6 +305,11 @@ class MainActivity : Activity() {
 
     private fun requestScreenCapture() {
         val manager = getSystemService(MediaProjectionManager::class.java)
-        startActivityForResult(manager.createScreenCaptureIntent(), 31)
+        if (manager != null) startActivityForResult(manager.createScreenCaptureIntent(), 31)
     }
+
+    private fun safetyText() = "TOM separates fresh observation from execution and execution from verification. A WebSocket acknowledgement is not proof that an external action succeeded. Payments, purchases, destructive changes, messages and other consequential actions remain explicitly approved and must be verified afterward. If evidence is unavailable, the result stays UNKNOWN rather than triggering a blind retry."
+    private fun privacyText() = "The Android bridge can access microphone audio, notifications, accessibility state, screen pixels, camera input and network transport only when the corresponding Android capability is enabled. These sources can contain sensitive information. Production deployments should use least privilege, protected credentials, authenticated transport, minimization and short retention. Revoked permissions are normal states and must never be bypassed."
+    private fun helpText() = "Microphone: grant RECORD_AUDIO and start the real voice session. Accessibility: enable TOM under Android Settings → Accessibility. Notifications: enable TOM under notification listener access. Screen capture: Android asks for MediaProjection consent for a session. Voice transport: the development endpoint is ${BuildConfig.TOM_VOICE_WS_URL}; a physical phone normally needs the Core machine's LAN address, while production should use authenticated WSS."
+    private fun aboutText() = "TOM is a native Android device bridge for a personal AI companion. The Android layer provides explicit capabilities, live voice transport, device observation and controlled execution. The interface is deliberately calm and weather-inspired, with liquid-glass surfaces, strong hierarchy and short native animations. The architecture treats observation, execution and verification as separate states so an unverified action never becomes a false success."
 }
