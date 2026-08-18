@@ -64,16 +64,12 @@ class OnboardingActivity : Activity() {
         stack.addView(TomGlassUi.logo(this, dp(128)), LinearLayout.LayoutParams(dp(128), dp(128)))
         stack.addView(TomGlassUi.title(this, "TOM", 40f).apply { gravity = Gravity.CENTER; includeFontPadding = false }, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(14) })
         stack.addView(TomGlassUi.body(this, "Observe  •  Understand  •  Assist").apply { gravity = Gravity.CENTER; includeFontPadding = false }, LinearLayout.LayoutParams(-1, dp(28)).apply { topMargin = dp(4) })
-
-        // Keep the first-frame splash entirely Android-native. This avoids constructing a
-        // Material progress widget before the activity has fully entered the window.
         val progressTrack = View(this).apply { background = rounded(Color.rgb(222, 232, 239), 3, Color.TRANSPARENT) }
         val progressFill = View(this).apply { background = rounded(TomGlassUi.brown, 3, Color.TRANSPARENT) }
         val progressFrame = FrameLayout(this)
         progressFrame.addView(progressTrack, FrameLayout.LayoutParams(-1, dp(4)))
         progressFrame.addView(progressFill, FrameLayout.LayoutParams(0, dp(4)))
         stack.addView(progressFrame, LinearLayout.LayoutParams(-1, dp(4)).apply { leftMargin = dp(30); rightMargin = dp(30); topMargin = dp(26) })
-
         val percent = TomGlassUi.body(this, "0%").apply { gravity = Gravity.CENTER; includeFontPadding = false }
         stack.addView(percent, LinearLayout.LayoutParams(-1, dp(28)).apply { topMargin = dp(6) })
         splash.addView(stack, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
@@ -85,9 +81,7 @@ class OnboardingActivity : Activity() {
             override fun run() {
                 if (isFinishing || splash.parent == null) return
                 value = (value + 4).coerceAtMost(100)
-                progressFill.layoutParams = (progressFill.layoutParams as FrameLayout.LayoutParams).apply {
-                    width = ((progressFrame.width * value) / 100).coerceAtLeast(if (value > 0) 1 else 0)
-                }
+                progressFill.layoutParams = (progressFill.layoutParams as FrameLayout.LayoutParams).apply { width = ((progressFrame.width * value) / 100).coerceAtLeast(if (value > 0) 1 else 0) }
                 progressFill.requestLayout()
                 percent.text = "$value%"
                 if (value < 100) mainHandler.postDelayed(this, 42) else mainHandler.postDelayed({ if (!isFinishing && splash.parent != null) splash.animate().alpha(0f).setDuration(280).withEndAction { if (!isFinishing) showStep() }.start() }, 180)
@@ -127,13 +121,8 @@ class OnboardingActivity : Activity() {
         top("Make TOM feel like yours", "Set the name and character style TOM should use in conversation.")
         section("YOUR NAME")
         val input = EditText(this).apply {
-            hint = "What should TOM call you?"
-            setText(name)
-            textSize = 16f
-            setSingleLine(true)
-            setTextColor(TomGlassUi.ink)
-            setHintTextColor(TomGlassUi.muted)
-            setPadding(dp(16), 0, dp(16), 0)
+            hint = "What should TOM call you?"; setText(name); textSize = 16f; setSingleLine(true)
+            setTextColor(TomGlassUi.ink); setHintTextColor(TomGlassUi.muted); setPadding(dp(16), 0, dp(16), 0)
             background = rounded(Color.WHITE, 16, TomGlassUi.line)
         }
         content.addView(input, LinearLayout.LayoutParams(-1, dp(56)).apply { topMargin = dp(10) })
@@ -159,28 +148,25 @@ class OnboardingActivity : Activity() {
     }
 
     private fun choice(label: String, selected: Boolean, onClick: () -> Unit) {
-        val card = com.google.android.material.card.MaterialCardView(this).apply {
-            radius = dp(17).toFloat(); cardElevation = 0f; strokeWidth = dp(1); strokeColor = if (selected) TomGlassUi.brown else TomGlassUi.line
-            setCardBackgroundColor(if (selected) Color.rgb(250, 245, 240) else Color.WHITE); isClickable = true; isFocusable = true
-            setOnClickListener { TomGlassUi.press(this); onClick() }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(17), 0, dp(12), 0)
+            background = rounded(if (selected) Color.rgb(250, 245, 240) else Color.WHITE, 17, if (selected) TomGlassUi.brown else TomGlassUi.line)
+            isClickable = true; isFocusable = true; setOnClickListener { TomGlassUi.press(this); onClick() }
         }
-        val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(17), 0, dp(12), 0) }
-        row.addView(TomGlassUi.title(this, label, 16f).apply { includeFontPadding = false }, LinearLayout.LayoutParams(0, dp(54), 1f))
-        row.addView(TomGlassUi.body(this, if (selected) "Selected" else "Choose").apply { gravity = Gravity.CENTER; setTextColor(TomGlassUi.brown); includeFontPadding = false }, LinearLayout.LayoutParams(dp(72), dp(54)))
-        card.addView(row, ViewGroup.LayoutParams(-1, dp(56)))
+        card.addView(TomGlassUi.title(this, label, 16f).apply { includeFontPadding = false }, LinearLayout.LayoutParams(0, dp(54), 1f))
+        card.addView(TomGlassUi.body(this, if (selected) "Selected" else "Choose").apply { gravity = Gravity.CENTER; setTextColor(TomGlassUi.brown); includeFontPadding = false }, LinearLayout.LayoutParams(dp(72), dp(54)))
         content.addView(card, LinearLayout.LayoutParams(-1, dp(58)).apply { topMargin = dp(8) })
     }
 
     private fun permissionCard(title: String, desc: String, granted: Boolean, action: String, onClick: () -> Unit) {
-        val card = com.google.android.material.card.MaterialCardView(this).apply { radius = dp(20).toFloat(); cardElevation = dp(1).toFloat(); strokeWidth = dp(1); strokeColor = TomGlassUi.line; setCardBackgroundColor(Color.WHITE) }
-        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(17), dp(15), dp(17), dp(15)) }
+        val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(17), dp(15), dp(17), dp(15)); background = rounded(Color.WHITE, 20, TomGlassUi.line); elevation = dp(1).toFloat() }
         val head = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         head.addView(TomGlassUi.title(this, title, 17f).apply { includeFontPadding = false }, LinearLayout.LayoutParams(0, dp(27), 1f))
         head.addView(TomGlassUi.body(this, if (granted) "Enabled" else "Not enabled").apply { gravity = Gravity.CENTER; includeFontPadding = false; setTextColor(if (granted) TomGlassUi.brown else TomGlassUi.muted) }, LinearLayout.LayoutParams(dp(90), dp(27)))
-        body.addView(head)
-        body.addView(TomGlassUi.body(this, desc).apply { includeFontPadding = false; setPadding(0, dp(5), 0, dp(11)) })
-        body.addView(TomGlassUi.button(this, if (granted) "Manage" else action, onClick, granted), LinearLayout.LayoutParams(-1, dp(50)))
-        card.addView(body, ViewGroup.LayoutParams(-1, -2))
+        card.addView(head)
+        card.addView(TomGlassUi.body(this, desc).apply { includeFontPadding = false; setPadding(0, dp(5), 0, dp(11)) })
+        card.addView(TomGlassUi.button(this, if (granted) "Manage" else action, onClick, granted), LinearLayout.LayoutParams(-1, dp(50)))
         content.addView(card, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(9) })
     }
 
