@@ -2,7 +2,6 @@ package com.tom.device
 
 import android.animation.ValueAnimator
 import android.content.Context
-import android.content.res.ColorStateList
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -14,12 +13,10 @@ import android.view.ViewGroup
 import android.view.animation.DecelerateInterpolator
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.google.android.material.button.MaterialButton
-import com.google.android.material.card.MaterialCardView
 import com.google.android.material.switchmaterial.SwitchMaterial
 import kotlin.math.min
 
-/** TOM visual system: Material-3 foundations with a restrained liquid-glass surface language. */
+/** TOM visual system: native Android primitives with a restrained liquid-glass surface language. */
 object TomGlassUi {
     val ink = Color.rgb(25, 27, 30)
     val muted = Color.rgb(91, 98, 105)
@@ -30,6 +27,8 @@ object TomGlassUi {
     val line = Color.rgb(218, 226, 232)
     val glass = Color.argb(218, 255, 255, 255)
 
+    private fun dp(context: Context, value: Int): Int = (value * context.resources.displayMetrics.density).toInt()
+
     fun weatherBackground(): GradientDrawable = GradientDrawable(
         GradientDrawable.Orientation.TL_BR,
         intArrayOf(Color.rgb(238, 247, 252), Color.rgb(248, 244, 250), Color.rgb(245, 248, 244))
@@ -38,17 +37,17 @@ object TomGlassUi {
     fun surface(context: Context, radius: Float = 24f, color: Int = glass): GradientDrawable =
         GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = radius
+            cornerRadius = dp(context, radius.toInt()).toFloat()
             setColor(color)
-            setStroke(1, Color.argb(145, 255, 255, 255))
+            setStroke(dp(context, 1), Color.argb(145, 255, 255, 255))
         }
 
-    private fun darkAction(): GradientDrawable = GradientDrawable(
+    private fun darkAction(context: Context): GradientDrawable = GradientDrawable(
         GradientDrawable.Orientation.TL_BR,
         intArrayOf(Color.rgb(25, 35, 43), Color.rgb(66, 84, 96))
-    ).apply { cornerRadius = 22f }
+    ).apply { cornerRadius = dp(context, 22).toFloat() }
 
-    fun darkActionForCard(): GradientDrawable = darkAction()
+    fun darkActionForCard(context: Context): GradientDrawable = darkAction(context)
 
     fun text(context: Context, value: String, size: Float, color: Int = ink): TextView = TextView(context).apply {
         text = value
@@ -129,58 +128,57 @@ object TomGlassUi {
     fun iconButton(context: Context, icon: String, onClick: () -> Unit): TextView = TextView(context).apply {
         text = icon; textSize = 20f; gravity = Gravity.CENTER; setTextColor(ink)
         background = surface(context, 17f, Color.argb(210, 255, 255, 255))
-        minHeight = 48; minWidth = 48; isClickable = true; isFocusable = true
+        minHeight = dp(context, 48); minWidth = dp(context, 48)
+        isClickable = true; isFocusable = true
         contentDescription = "Settings"
         setOnClickListener { press(this); onClick() }
     }
 
-    fun button(context: Context, label: String, onClick: () -> Unit, primary: Boolean = false): MaterialButton =
-        MaterialButton(context).apply {
-            text = label; textSize = 14f; isAllCaps = false
-            minHeight = 50; minimumHeight = 50; insetTop = 0; insetBottom = 0
-            cornerRadius = 18
-            strokeWidth = if (primary) 0 else 1
-            strokeColor = ColorStateList.valueOf(line)
-            backgroundTintList = ColorStateList.valueOf(if (primary) ink else Color.argb(235, 255, 255, 255))
-            setTextColor(if (primary) white else ink)
-            rippleColor = ColorStateList.valueOf(Color.argb(28, 80, 120, 145))
-            isClickable = true; isFocusable = true
-            setOnClickListener { press(this); onClick() }
+    fun button(context: Context, label: String, onClick: () -> Unit, primary: Boolean = false): TextView = TextView(context).apply {
+        text = label; textSize = 14f; gravity = Gravity.CENTER
+        setPadding(dp(context, 12), 0, dp(context, 12), 0)
+        minHeight = dp(context, 50)
+        setTextColor(if (primary) white else ink)
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(context, 18).toFloat()
+            setColor(if (primary) ink else Color.argb(235, 255, 255, 255))
+            setStroke(dp(context, 1), if (primary) Color.TRANSPARENT else line)
         }
+        isClickable = true; isFocusable = true
+        setOnClickListener { press(this); onClick() }
+    }
 
     fun navItem(context: Context, icon: String, label: String, selected: Boolean, onClick: () -> Unit): LinearLayout =
         LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
-            setPadding(6, 6, 6, 5)
-            background = if (selected) darkAction() else null
-            elevation = if (selected) 4f else 0f
-            addView(text(context, icon, 19f, if (selected) white else muted).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, 26))
-            addView(text(context, label, 11f, if (selected) white else muted).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, 20))
+            setPadding(dp(context, 6), dp(context, 6), dp(context, 6), dp(context, 5))
+            background = if (selected) darkAction(context) else null
+            elevation = if (selected) dp(context, 4).toFloat() else 0f
+            addView(text(context, icon, 19f, if (selected) white else muted).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, dp(context, 26)))
+            addView(text(context, label, 11f, if (selected) white else muted).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, dp(context, 20)))
             isClickable = true; isFocusable = true; contentDescription = label
             setOnClickListener { press(this); onClick() }
         }
 
-    fun card(context: Context, heading: String, description: String, action: String? = null, onClick: (() -> Unit)? = null): MaterialCardView =
-        MaterialCardView(context).apply {
-            radius = 24f; cardElevation = 2f; strokeWidth = 1
-            strokeColor = Color.argb(135, 255, 255, 255)
-            setCardBackgroundColor(Color.argb(222, 255, 255, 255))
-            val body = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL; setPadding(20, 18, 20, 18)
-                addView(title(context, heading, 18f), LinearLayout.LayoutParams(-1, -2))
-                addView(body(context, description).apply { setPadding(0, 7, 0, if (action == null) 0 else 12) }, LinearLayout.LayoutParams(-1, -2))
-                if (action != null && onClick != null) addView(button(context, action, onClick, false), LinearLayout.LayoutParams(-1, 50))
-            }
-            addView(body, ViewGroup.LayoutParams(-1, -2))
+    fun card(context: Context, heading: String, description: String, action: String? = null, onClick: (() -> Unit)? = null): LinearLayout =
+        LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(context, 20), dp(context, 18), dp(context, 20), dp(context, 18))
+            background = surface(context, 24f, Color.argb(222, 255, 255, 255))
+            elevation = dp(context, 1).toFloat()
+            addView(title(context, heading, 18f), LinearLayout.LayoutParams(-1, -2))
+            addView(body(context, description).apply { setPadding(0, dp(context, 7), 0, if (action == null) 0 else dp(context, 12)) }, LinearLayout.LayoutParams(-1, -2))
+            if (action != null && onClick != null) addView(button(context, action, onClick, false), LinearLayout.LayoutParams(-1, dp(context, 50)))
         }
 
     fun section(context: Context, value: String): TextView = text(context, value.uppercase(), 10.5f, brown).apply {
-        letterSpacing = .15f; setPadding(3, 10, 3, 5)
+        letterSpacing = .15f; setPadding(dp(context, 3), dp(context, 10), dp(context, 3), dp(context, 5))
         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
     }
 
     fun toggle(context: Context, checked: Boolean, onChanged: (Boolean) -> Unit): SwitchMaterial = SwitchMaterial(context).apply {
-        isChecked = checked; minWidth = 56; minHeight = 48
+        isChecked = checked; minWidth = dp(context, 56); minHeight = dp(context, 48)
         setOnCheckedChangeListener { _, value -> press(this); onChanged(value) }
     }
 
