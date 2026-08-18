@@ -3,11 +3,12 @@
     <style name="Theme.TOM" parent="Theme.Material3.Light.NoActionBar">
         <item name="android:windowNoTitle">true</item>
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">#7A4E2F</item>
+        <item name="android:colorAccent">#5897B8</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowDisablePreview">false</item>
     </style>
 </resources>
