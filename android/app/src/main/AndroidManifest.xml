@@ -18,6 +18,8 @@
     <application
         android:allowBackup="false"
         android:label="TOM"
+        android:icon="@drawable/ic_tom_launcher"
+        android:roundIcon="@drawable/ic_tom_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.TOM">
         <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
