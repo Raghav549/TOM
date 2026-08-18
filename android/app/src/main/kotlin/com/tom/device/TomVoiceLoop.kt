@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -301,7 +302,7 @@ class TomVoiceLoop(
             }
             runCatching { recognizer?.startListening(intent) }
                 .onFailure { onError("Speech recognition start failed: ${it.message}") }
-        }, System.currentTimeMillis() + delay, "recognizer_restart")
+        }, "recognizer_restart", SystemClock.uptimeMillis() + delay)
     }
 
     private fun handleLocalCommand(raw: String) {
@@ -345,14 +346,10 @@ class TomVoiceLoop(
                 say("Theek hai.")
                 mainHandler.postDelayed({ stop() }, 700L)
             }
-            else -> {
-                // One short acknowledgement only; never echo the transcript indefinitely.
-                say("Samajh gaya. Abhi demo mode mein hoon.")
-            }
+            else -> say("Samajh gaya. Abhi demo mode mein hoon.")
         }
     }
 
-    /** Remote Core remains optional. Local voice continues even if the endpoint is unavailable. */
     private fun connectCoreSilently() {
         if (!running.get() || endpoint.isBlank()) return
         runCatching {
