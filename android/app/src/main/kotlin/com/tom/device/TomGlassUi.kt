@@ -54,8 +54,10 @@ object TomGlassUi {
         text = value
         textSize = size
         setTextColor(color)
-        setLineSpacing(1.5f, 1.08f)
+        setLineSpacing(0f, 1.16f)
         includeFontPadding = false
+        breakStrategy = android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY
+        hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NORMAL
     }
 
     fun title(context: Context, value: String, size: Float = 30f): TextView = text(context, value, size).apply {
