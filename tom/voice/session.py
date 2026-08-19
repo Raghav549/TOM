@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import wave
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -20,7 +22,7 @@ class VoiceTurn:
 class VoiceSession:
     """Coordinates language, emotion, character identity, expressive prosody and synthesis."""
 
-    def __init__(self, engine: SpeechEngine, director: VoiceDirector | None = None, planner: ExpressiveSpeechPlanner | None = None) -> None:
+    def __init__(self, engine: SpeechEngine | object, director: VoiceDirector | None = None, planner: ExpressiveSpeechPlanner | None = None) -> None:
         self.engine = engine
         self.director = director or VoiceDirector()
         self.planner = planner or ExpressiveSpeechPlanner()
@@ -47,15 +49,41 @@ class VoiceSession:
             "character": signals.character_name,
             "character_style": signals.character_style,
             "character_traits": list(signals.character_traits),
-            "voice_design": signals.character_style not in {"friendly", "sigma", "default"} or bool(signals.character_traits),
-            "temperature": 0.62 if style.intensity < 0.65 else 0.72,
+            # Keep a stable named voice by default. VoiceDesign is deliberately
+            # opt-in because recreating the character on every turn can change
+            # timbre and is substantially heavier than CustomVoice.
+            "voice_design": signals.character_style not in {"friendly", "sigma", "default"} and bool(signals.character_traits) and signals.character_style == "voice_design",
+            "temperature": 0.62 if style.intensity < 0.65 else 0.68,
             "top_p": 0.90,
         }})
         return VoiceTurn(text=text, language=language, voice_id=voice_id, style=style)
 
     def synthesize(self, turn: VoiceTurn) -> bytes:
         voice = VOICE_PROFILES[turn.voice_id]
-        return self.engine.synthesize(turn.text, language=turn.language, voice=voice, style=turn.style)
+        synthesize = getattr(self.engine, "synthesize", None)
+        if callable(synthesize):
+            return synthesize(turn.text, language=turn.language, voice=voice, style=turn.style)
+
+        stream = getattr(self.engine, "stream", None)
+        if not callable(stream):
+            raise RuntimeError("Configured TOM voice engine exposes neither synthesize() nor stream()")
+
+        chunks = list(stream(turn.text, language=turn.language, voice=voice, style=turn.style))
+        if not chunks:
+            raise RuntimeError("TOM voice engine produced no audio")
+        pcm = b"".join(bytes(getattr(chunk, "pcm16", chunk)) for chunk in chunks)
+        sample_rate = int(getattr(chunks[0], "sample_rate", 24_000))
+        return self._pcm16_wav(pcm, sample_rate)
+
+    @staticmethod
+    def _pcm16_wav(pcm: bytes, sample_rate: int) -> bytes:
+        output = io.BytesIO()
+        with wave.open(output, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(pcm)
+        return output.getvalue()
 
     @staticmethod
     def chunks(audio: bytes, chunk_size: int = 32_768) -> Iterator[bytes]:
