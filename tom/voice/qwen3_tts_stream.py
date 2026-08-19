@@ -11,7 +11,7 @@ from .models import Language, VoiceProfile, VoiceStyle
 
 @dataclass(frozen=True)
 class Qwen3VoiceConfig:
-    model_id: str = os.getenv("TOM_QWEN3_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice")
+    model_id: str = os.getenv("TOM_QWEN3_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
     voice_design_model_id: str = os.getenv("TOM_QWEN3_TTS_VOICE_DESIGN_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
     device: str = os.getenv("TOM_QWEN3_TTS_DEVICE", "auto")
     dtype: str = os.getenv("TOM_QWEN3_TTS_DTYPE", "bfloat16")
@@ -66,6 +66,40 @@ class Qwen3TTSStreamingAdapter:
         existing = getattr(self, slot)
         if existing is not None:
             return existing
+
+        # TOM safety gate: never let a local Qwen load exhaust the Codespaces host.
+        # Qwen3-TTS 0.6B is intended for machines with substantially more memory
+        # than a small Codespaces container when running on CPU.
+        min_ram_gb = float(os.getenv("TOM_QWEN3_TTS_MIN_RAM_GB", "8"))
+        try:
+            import psutil
+            available_gb = psutil.virtual_memory().available / (1024 ** 3)
+        except Exception:
+            available_gb = 0.0
+
+        use_cuda = False
+        try:
+            import torch
+            use_cuda = bool(torch.cuda.is_available())
+            if use_cuda:
+                free_bytes, _ = torch.cuda.mem_get_info()
+                min_vram_gb = float(os.getenv("TOM_QWEN3_TTS_MIN_VRAM_GB", "4"))
+                if free_bytes / (1024 ** 3) < min_vram_gb:
+                    raise RuntimeError(
+                        f"Qwen3-TTS skipped: only {free_bytes/(1024**3):.2f} GB GPU memory free"
+                    )
+            elif available_gb < min_ram_gb:
+                raise RuntimeError(
+                    f"Qwen3-TTS skipped: only {available_gb:.2f} GB RAM available; "
+                    f"{min_ram_gb:.1f} GB required for safe local CPU inference"
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            if available_gb < min_ram_gb:
+                raise RuntimeError(
+                    f"Qwen3-TTS skipped: only {available_gb:.2f} GB RAM available"
+                )
         try:
             import torch
             from qwen_tts import Qwen3TTSModel
@@ -82,9 +116,13 @@ class Qwen3TTSStreamingAdapter:
             kwargs["device_map"] = device
         if self.config.attn_implementation:
             kwargs["attn_implementation"] = self.config.attn_implementation
+
+        # Codespaces/CPU-safe path: do not compile/stream-optimize on CPU.
+        use_cuda = bool(torch.cuda.is_available())
         model = Qwen3TTSModel.from_pretrained(model_id, **kwargs)
+
         enable = getattr(model, "enable_streaming_optimizations", None)
-        if callable(enable) and self.config.streaming:
+        if callable(enable) and self.config.streaming and use_cuda:
             try:
                 enable(
                     decode_window_frames=self.config.decode_window_frames,
@@ -243,10 +281,14 @@ class Qwen3TTSStreamingAdapter:
         if self.config.stream_url:
             yield from self._stream_http(prompt, language, voice, style)
             return
-        local_stream = self._stream_local(prompt, language, voice, style)
-        if local_stream is not None:
-            yield from local_stream
-            return
+        # CPU/Codespaces: use reliable non-streaming generation.
+        # True streaming remains enabled automatically on CUDA.
+        import torch
+        if torch.cuda.is_available() and self.config.streaming:
+            local_stream = self._stream_local(prompt, language, voice, style)
+            if local_stream is not None:
+                yield from local_stream
+                return
         try:
             import numpy as np
         except ImportError as exc:

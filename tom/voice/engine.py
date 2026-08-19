@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import io
 import json
 import os
 import subprocess
 import tempfile
-import wave
 from pathlib import Path
 from typing import Protocol
 
@@ -23,7 +21,7 @@ class SpeechEngine(Protocol):
         voice: VoiceProfile,
         style: VoiceStyle,
     ) -> bytes:
-        """Return WAV bytes or raise if the configured engine is unavailable."""
+        """Return PCM/WAV bytes or raise if the configured engine is unavailable."""
 
 
 class SpeechEngineConfig:
@@ -33,14 +31,14 @@ class SpeechEngineConfig:
 
 
 class ExternalCommandSpeechEngine:
-    """Model-agnostic TTS adapter with a real local streaming fallback.
+    """Model-agnostic local TTS adapter.
 
-    If TOM_TTS_COMMAND is configured, the legacy external-command contract is
-    used. Otherwise TOM uses its configured real streaming TTS stack and wraps
-    the resulting PCM in a WAV container for the non-streaming HTTP endpoint.
-    The live voice WebSocket uses the streaming adapter directly.
+    The command receives a JSON request file and must write a WAV file to the
+    requested output path. This keeps the runtime independent of a particular
+    open model while allowing CosyVoice, StyleTTS2, XTTS, or another licensed
+    local engine to be plugged in without changing TOM's dialogue layer.
 
-    TOM never silently substitutes canned audio when no real engine is available.
+    TOM never silently substitutes canned audio when the engine is absent.
     """
 
     def __init__(self, config: SpeechEngineConfig | None = None) -> None:
@@ -55,30 +53,60 @@ class ExternalCommandSpeechEngine:
         style: VoiceStyle,
     ) -> bytes:
         if not self.config.command:
-            return self._synthesize_streaming_stack(text, language=language, voice=voice, style=style)
+            from .tts_factory import build_streaming_tts
+            import io
+            import wave
+
+            chunks = build_streaming_tts().stream(
+                text,
+                language=language,
+                voice=voice,
+                style=style,
+            )
+
+            pcm = bytearray()
+            sample_rate = 24000
+
+            for chunk in chunks:
+                data = getattr(chunk, "pcm16", None)
+                if data:
+                    pcm.extend(data)
+                    sample_rate = getattr(chunk, "sample_rate", sample_rate)
+
+            if not pcm:
+                raise RuntimeError("TTS stream returned no audio")
+
+            out = io.BytesIO()
+            with wave.open(out, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(sample_rate)
+                wav.writeframes(bytes(pcm))
+
+            return out.getvalue()
 
         with tempfile.TemporaryDirectory(prefix="tom-tts-") as tmp:
             root = Path(tmp)
             request = root / "request.json"
             output = root / "output.wav"
+
             request.write_text(
-                json.dumps(
-                    {
-                        "text": text,
-                        "language": language.value,
-                        "voice_id": voice.id,
-                        "reference_audio": voice.reference_audio,
-                        "style": style.model_dump(),
-                        "output": str(output),
-                    },
-                    ensure_ascii=False,
-                ),
+                json.dumps({
+                    "text": text,
+                    "language": language.value,
+                    "voice_id": voice.id,
+                    "reference_audio": voice.reference_audio,
+                    "style": style.value,
+                    "output": str(output),
+                }, ensure_ascii=False),
                 encoding="utf-8",
             )
+
             command = self.config.command.format(
                 request=str(request),
                 output=str(output),
             )
+
             completed = subprocess.run(
                 command,
                 shell=True,
@@ -87,36 +115,11 @@ class ExternalCommandSpeechEngine:
                 timeout=self.config.timeout_s,
                 check=False,
             )
+
             if completed.returncode != 0:
                 raise RuntimeError(
-                    f"TTS engine failed ({completed.returncode}): {completed.stderr[-2000:]}"
+                    f"TTS engine failed ({completed.returncode}): "
+                    f"{completed.stderr[-200:]}"
                 )
-            if not output.is_file() or output.stat().st_size == 0:
-                raise RuntimeError("TTS engine completed without producing output.wav")
+
             return output.read_bytes()
-
-    @staticmethod
-    def _synthesize_streaming_stack(
-        text: str,
-        *,
-        language: Language,
-        voice: VoiceProfile,
-        style: VoiceStyle,
-    ) -> bytes:
-        from .tts_factory import build_streaming_tts
-
-        engine = build_streaming_tts()
-        chunks = list(engine.stream(text, language=language, voice=voice, style=style))
-        if not chunks:
-            raise RuntimeError(
-                "No real TTS engine produced audio. Configure TOM_TTS_ENGINE and install its voice extra."
-            )
-        pcm = b"".join(bytes(chunk.pcm16) for chunk in chunks)
-        sample_rate = int(chunks[0].sample_rate)
-        output = io.BytesIO()
-        with wave.open(output, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(sample_rate)
-            wav.writeframes(pcm)
-        return output.getvalue()
