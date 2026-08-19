@@ -23,31 +23,30 @@ class Qwen3VoiceConfig:
     max_frames: int = int(os.getenv("TOM_QWEN3_TTS_MAX_FRAMES", "10000"))
     overlap_samples: int = int(os.getenv("TOM_QWEN3_TTS_OVERLAP_SAMPLES", "0"))
     streaming: bool = os.getenv("TOM_QWEN3_TTS_STREAMING", "true").lower() not in {"0", "false", "no"}
+    voice_design_enabled: bool = os.getenv("TOM_QWEN3_TTS_VOICE_DESIGN", "false").lower() in {"1", "true", "yes"}
     stream_url: str | None = os.getenv("TOM_QWEN3_TTS_STREAM_URL") or None
-    attn_implementation: str | None = os.getenv("TOM_QWEN3_TTS_ATTN", "flash_attention_2") or None
+    # SDPA is the safer default for long-running reliability; FlashAttention 2
+    # remains available as an explicit opt-in performance setting.
+    attn_implementation: str | None = os.getenv("TOM_QWEN3_TTS_ATTN", "sdpa") or None
 
 
 class Qwen3TTSStreamingAdapter:
     """Qwen3-TTS adapter with true token/codec streaming when available.
 
-    The official qwen-tts Python wrapper currently exposes a non-streaming
-    convenience API. TOM therefore supports two real streaming backends:
+    The official Qwen3-TTS checkpoints support streaming speech generation and
+    expressive instructions. TOM keeps CustomVoice as the stable default for a
+    consistent companion timbre and only enables VoiceDesign explicitly.
 
-    1. a compatible local Qwen streaming implementation exposing
-       ``stream_generate_custom_voice`` / ``stream_generate_voice_clone``;
-    2. an OpenAI-compatible Qwen3 streaming server via ``TOM_QWEN3_TTS_STREAM_URL``.
-
-    If neither is available, the adapter falls back to full synthesis and packetizes
-    the result. It never labels that fallback as model-level streaming.
+    TOM's current language router sends English here. Hindi/Hinglish/Bengali are
+    intentionally handled by the Indic backend because the official Qwen3-TTS
+    model family does not list those languages as supported target languages.
     """
 
     SAMPLE_RATE = 24000
+    SUPPORTED_TOM_LANGUAGES: ClassVar[set[Language]] = {Language.EN}
 
     _LANGUAGE_NAMES: ClassVar[dict[Language, str]] = {
         Language.EN: "English",
-        Language.HI: "Hindi",
-        Language.HINGLISH: "English",
-        Language.BN: "Bengali",
     }
 
     _SPEAKERS: ClassVar[dict[str, str]] = {
@@ -105,18 +104,30 @@ class Qwen3TTSStreamingAdapter:
         intensity = "subtle" if style.intensity < 0.4 else "expressive" if style.intensity < 0.75 else "highly expressive"
         breath = "with audible natural micro-breath timing" if style.breathiness >= 0.35 else "with natural breath timing"
         warmth = "warm and intimate" if style.warmth >= 0.7 else "clear and conversational"
+        pause = "slightly longer phrase pauses" if style.pause_scale > 1.1 else "tight natural phrase pauses" if style.pause_scale < 0.9 else "natural phrase pauses"
         character_hint = f" Character identity: {character}." if character else ""
         trait_hint = f" Character traits: {traits}." if traits else ""
         return (
             f"Speak in a {emotion}, {intensity}, {warmth}, {pitch} conversational style at a {rate} rate, "
-            f"with realistic pauses and {breath}. Avoid theatrical overacting and avoid robotic cadence."
+            f"with realistic pauses, {pause}, and {breath}. Keep breaths subtle and do not breathe on every phrase. "
+            "Sound like a real person speaking naturally to one familiar person, not like a narrator or announcer. "
+            "Avoid theatrical overacting, exaggerated emotion, robotic cadence, forced laughter, and filler words. "
+            "Do not read markdown, stage directions, emoji names, or formatting instructions aloud."
             f"{character_hint}{trait_hint}"
         )
 
+    def _validate_language(self, language: Language) -> None:
+        if language not in self.SUPPORTED_TOM_LANGUAGES:
+            raise RuntimeError(
+                f"Qwen3-TTS backend is not configured for TOM language '{language.value}'. "
+                "Use the hybrid/Indic voice router for Hindi, Hinglish, or Bengali."
+            )
+
     def _generate(self, text: str, language: Language, voice: VoiceProfile, style: VoiceStyle) -> tuple[Any, int]:
-        use_design = bool(style.prosody_plan.get("voice_design"))
+        self._validate_language(language)
+        use_design = bool(style.prosody_plan.get("voice_design", self.config.voice_design_enabled))
         model = self._load(design=use_design)
-        language_name = self._LANGUAGE_NAMES.get(language, "English")
+        language_name = self._LANGUAGE_NAMES[language]
         instruction = self._instruction(
             style,
             character=str(style.prosody_plan.get("character", voice.label)),
@@ -124,8 +135,8 @@ class Qwen3TTSStreamingAdapter:
         )
         kwargs = {
             "do_sample": True,
-            "temperature": float(style.prosody_plan.get("temperature", 0.7)),
-            "top_p": float(style.prosody_plan.get("top_p", 0.9)),
+            "temperature": float(style.prosody_plan.get("temperature", 0.62)),
+            "top_p": float(style.prosody_plan.get("top_p", 0.90)),
         }
         if use_design:
             wavs, sr = model.generate_voice_design(
@@ -157,9 +168,10 @@ class Qwen3TTSStreamingAdapter:
     def _stream_local(self, text: str, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk] | None:
         if not self.config.streaming:
             return None
-        use_design = bool(style.prosody_plan.get("voice_design"))
+        self._validate_language(language)
+        use_design = bool(style.prosody_plan.get("voice_design", self.config.voice_design_enabled))
         model = self._load(design=use_design)
-        language_name = self._LANGUAGE_NAMES.get(language, "English")
+        language_name = self._LANGUAGE_NAMES[language]
         instruction = self._instruction(
             style,
             character=str(style.prosody_plan.get("character", voice.label)),
@@ -167,8 +179,8 @@ class Qwen3TTSStreamingAdapter:
         )
         common = {
             "do_sample": True,
-            "temperature": float(style.prosody_plan.get("temperature", 0.7)),
-            "top_p": float(style.prosody_plan.get("top_p", 0.9)),
+            "temperature": float(style.prosody_plan.get("temperature", 0.62)),
+            "top_p": float(style.prosody_plan.get("top_p", 0.90)),
             "emit_every_frames": self.config.emit_every_frames,
             "decode_window_frames": self.config.decode_window_frames,
             "overlap_samples": self.config.overlap_samples,
@@ -196,12 +208,13 @@ class Qwen3TTSStreamingAdapter:
         return None
 
     def _stream_http(self, text: str, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk]:
+        self._validate_language(language)
         try:
             import httpx
         except ImportError as exc:
             raise RuntimeError("httpx is required for TOM_QWEN3_TTS_STREAM_URL") from exc
         speaker = self._SPEAKERS.get(voice.id, "Ryan")
-        language_name = self._LANGUAGE_NAMES.get(language, "English")
+        language_name = self._LANGUAGE_NAMES[language]
         instruction = self._instruction(
             style,
             character=str(style.prosody_plan.get("character", voice.label)),
@@ -226,6 +239,7 @@ class Qwen3TTSStreamingAdapter:
         prompt = text.strip()
         if not prompt:
             return
+        self._validate_language(language)
         if self.config.stream_url:
             yield from self._stream_http(prompt, language, voice, style)
             return
