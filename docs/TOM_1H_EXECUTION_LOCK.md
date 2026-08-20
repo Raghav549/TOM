@@ -5,9 +5,9 @@ Status: LOCKED — 2026-08-20
 Execution order:
 
 1. Android real PCM voice playback + full-duplex integration
-2. Three voice identities + Hindi/Bengali/Hinglish routing
+2. Three voice identities + validated language routing
 3. Voice interruption/resume + latency benchmark
-4. Commit current Qwen-Space + ResilientTTS work into the repository
+4. Commit and validate the real Kaggle Qwen3-TTS deployment path
 5. Production-grade browser execution
 6. Semantic long-term memory
 7. Android/security/credential hardening
@@ -20,3 +20,4 @@ Rules:
 - Never replace real execution with demo/mock behavior.
 - Preserve the existing safety/approval/verification contracts.
 - A capability is complete only when it executes, produces observable evidence, handles failure, and has a test or explicit hardware/provider validation gate.
+- Qwen3-TTS production speech is the real CustomVoice model running on the authoritative Kaggle GPU worker; hosted demos and silent fallbacks are not production paths.
