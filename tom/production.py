@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import os
 import asyncio
 import importlib.util
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,14 +19,15 @@ class CapabilityCheck:
 
 
 class ProductionReadiness:
-    """Truthful production-readiness report; never turns missing adapters into green checks."""
+    """Truthful production-readiness report; unreachable dependencies stay red."""
 
     def __init__(self) -> None:
         self.environment = os.getenv("TOM_ENV", "development")
 
     def checks(self) -> list[CapabilityCheck]:
-        model = bool(os.getenv("TOM_LLM_ENABLED", "false").lower() == "true" and os.getenv("TOM_LLM_MODEL", "").strip())
-        tts = bool(os.getenv("TOM_TTS_ENGINE", "").strip())
+        llm = bool(os.getenv("TOM_LLM_ENABLED", "false").lower() == "true" and os.getenv("TOM_LLM_MODEL", "").strip())
+        tts_engine = os.getenv("TOM_TTS_ENGINE", "qwen3").strip().lower()
+        tts = tts_engine in {"qwen3", "qwen3-tts", "qwen"} and bool(os.getenv("TOM_QWEN3_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice").strip())
         asr = bool(os.getenv("TOM_ASR_MODEL", "").strip())
         vad = os.getenv("TOM_NEURAL_VAD", "true").lower() not in {"0", "false", "no"}
         turn = bool(os.getenv("TOM_TURN_MODEL_PATH", "").strip())
@@ -35,8 +36,8 @@ class ProductionReadiness:
         device_secret = bool(os.getenv("TOM_DEVICE_SECRETS_JSON", "").strip())
         data_dir = Path(os.getenv("TOM_DATA_DIR", ".tom-data"))
         return [
-            CapabilityCheck("model", model, "LLM provider configured" if model else "configure TOM_LLM_ENABLED/TOM_LLM_MODEL"),
-            CapabilityCheck("tts", tts, "TTS engine selected" if tts else "configure TOM_TTS_ENGINE"),
+            CapabilityCheck("model", llm, "Qwen/ModelScope LLM configured" if llm else "configure TOM_LLM_ENABLED/TOM_LLM_MODEL"),
+            CapabilityCheck("tts", tts, "Qwen3-TTS configured" if tts else "configure TOM_TTS_ENGINE=qwen3 and TOM_QWEN3_TTS_MODEL"),
             CapabilityCheck("asr", asr, "ASR model selected" if asr else "configure TOM_ASR_MODEL"),
             CapabilityCheck("neural_vad", vad, "neural VAD enabled" if vad else "neural VAD disabled"),
             CapabilityCheck("learned_turn", turn, "ONNX turn model configured" if turn else "TOM_TURN_MODEL_PATH not configured"),
@@ -45,15 +46,6 @@ class ProductionReadiness:
             CapabilityCheck("device_auth", device_secret, "device secret store configured" if device_secret else "configure secure device secrets"),
             CapabilityCheck("persistent_data", True, f"data directory: {data_dir}"),
         ]
-
-    def report(self) -> dict[str, object]:
-        checks = self.checks()
-        return {
-            "environment": self.environment,
-            "ready": all(item.configured for item in checks),
-            "checks": [item.__dict__ for item in checks],
-            "policy": "A capability is executable only when its adapter is configured and its permission gate allows it.",
-        }
 
     async def probe(self, *, browser: Any = None, device_sessions: Any = None) -> dict[str, object]:
         checks = {item.name: item for item in self.checks()}
@@ -79,31 +71,65 @@ class ProductionReadiness:
         if not checks["model"].configured:
             return
         base_url = os.getenv("TOM_LLM_BASE_URL", "").rstrip("/")
-        headers = {"Authorization": f"Bearer {os.getenv('TOM_LLM_API_KEY', '').strip()}"}
+        key = os.getenv("TOM_LLM_API_KEY", "").strip()
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        payload = {
+            "model": os.getenv("TOM_LLM_MODEL", "Qwen/Qwen3-8B"),
+            "messages": [{"role": "user", "content": "Reply exactly TOM_READY"}],
+            "stream": True,
+            "extra_body": {"enable_thinking": False},
+        }
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(f"{base_url}/models", headers=headers)
-                response.raise_for_status()
-            checks["model"] = CapabilityCheck("model", True, "Qwen OpenAI-compatible endpoint is reachable")
-        except Exception as exc:  # noqa: BLE001 - readiness reports provider failures
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=payload) as response:
+                    response.raise_for_status()
+                    saw_delta = False
+                    saw_done = False
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            saw_done = True
+                            break
+                        try:
+                            payload = __import__("json").loads(data)
+                        except ValueError:
+                            continue
+                        choices = payload.get("choices") or []
+                        if choices:
+                            delta = (choices[0] or {}).get("delta") or {}
+                            if isinstance(delta.get("content"), str) and delta.get("content"):
+                                saw_delta = True
+                    if not saw_delta:
+                        raise RuntimeError("Qwen endpoint returned no content delta")
+                    if not saw_done:
+                        raise RuntimeError("Qwen endpoint did not terminate with [DONE]")
+            checks["model"] = CapabilityCheck("model", True, "Qwen/ModelScope SSE chat completion verified")
+        except Exception as exc:  # noqa: BLE001
             checks["model"] = CapabilityCheck("model", False, f"Qwen LLM endpoint unavailable: {type(exc).__name__}")
 
     async def _probe_tts(self, checks: dict[str, CapabilityCheck]) -> None:
-        if os.getenv("TOM_TTS_ENGINE", "qwen3").strip().lower() not in {"qwen3", "qwen3-tts", "qwen"}:
-            checks["tts"] = CapabilityCheck("tts", False, "production TTS engine must be Qwen3-TTS")
+        if not checks["tts"].configured:
             return
+        # Remote TTS health is preferred when explicitly configured; otherwise
+        # the local Qwen3 adapter is the authoritative runtime and health is
+        # checked by loading the real checkpoint in the same process.
         url = os.getenv("TOM_QWEN3_TTS_STREAM_URL", "").strip()
-        if not url:
-            checks["tts"] = CapabilityCheck("tts", False, "configure TOM_QWEN3_TTS_STREAM_URL for the Qwen3-TTS service")
-            return
-        health_url = url.removesuffix("/stream") + "/health"
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(health_url)
-                response.raise_for_status()
-            checks["tts"] = CapabilityCheck("tts", True, "Qwen3-TTS streaming service is reachable and model-loaded")
+            if url:
+                health_url = url.removesuffix("/stream") + "/health"
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(health_url, headers=_tts_headers())
+                    response.raise_for_status()
+                checks["tts"] = CapabilityCheck("tts", True, "Qwen3-TTS streaming service is reachable and model-loaded")
+                return
+            from tom.voice.qwen3_tts_stream import Qwen3TTSStreamingAdapter
+            await asyncio.to_thread(Qwen3TTSStreamingAdapter()._load)
+            checks["tts"] = CapabilityCheck("tts", True, "local Qwen3-TTS checkpoint loaded")
         except Exception as exc:  # noqa: BLE001
-            checks["tts"] = CapabilityCheck("tts", False, f"Qwen3-TTS service unavailable: {type(exc).__name__}")
+            checks["tts"] = CapabilityCheck("tts", False, f"Qwen3-TTS unavailable: {type(exc).__name__}: {str(exc)[:180]}")
 
     async def _probe_local_models(self, checks: dict[str, CapabilityCheck]) -> None:
         if checks["asr"].configured:
@@ -143,6 +169,11 @@ class ProductionReadiness:
             checks["persistent_data"] = CapabilityCheck("persistent_data", True, f"data directory is writable: {data_dir}")
         except OSError as exc:
             checks["persistent_data"] = CapabilityCheck("persistent_data", False, f"data directory is not writable: {type(exc).__name__}")
+
+
+def _tts_headers() -> dict[str, str]:
+    token = os.getenv("TOM_QWEN3_TTS_AUTH_TOKEN", "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _module_available(name: str) -> bool:
