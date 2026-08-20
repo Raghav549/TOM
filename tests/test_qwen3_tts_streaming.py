@@ -4,22 +4,13 @@ from tom.voice.qwen3_tts_stream import Qwen3TTSStreamingAdapter, Qwen3VoiceConfi
 
 class FakeModel:
     def generate_custom_voice(self, *args, **kwargs):
-        return self.generate_voice_design(*args, **kwargs)
-
-    def generate_voice_design(self, *args, **kwargs):
         import numpy as np
-        return np.zeros(24000, dtype=np.float32), 24000
-
-    def stream_generate_custom_voice(self, **kwargs):
         assert kwargs["text"] == "hello"
         assert kwargs["speaker"] == "Ryan"
-        assert kwargs["emit_every_frames"] == 4
-        assert kwargs["decode_window_frames"] == 72
-        yield b"first", 24000
-        yield b"second", 24000
+        return [np.zeros(24000, dtype=np.float32)], 24000
 
 
-def test_qwen_streams_model_chunks_without_full_generation(monkeypatch):
+def test_qwen_chunks_real_generation_output_without_model_streaming(monkeypatch):
     adapter = Qwen3TTSStreamingAdapter(
         Qwen3VoiceConfig(
             streaming=True,
@@ -36,8 +27,9 @@ def test_qwen_streams_model_chunks_without_full_generation(monkeypatch):
     voice = VoiceProfile(id="tom_m1", label="TOM", gender="male", description="test")
     chunks = list(adapter.stream("hello", language=Language.EN, voice=voice, style=VoiceStyle()))
 
-    assert [c.pcm16 for c in chunks] == [b"first", b"second"]
-    assert [c.sample_rate for c in chunks] == [24000, 24000]
+    assert len(chunks) > 1
+    assert all(chunk.sample_rate == 24000 for chunk in chunks)
+    assert all(len(chunk.pcm16) > 0 and len(chunk.pcm16) % 2 == 0 for chunk in chunks)
 
 
 def test_float_audio_is_converted_to_int16():

@@ -52,3 +52,47 @@ async def test_unknown_postcondition_cannot_become_success() -> None:
     result = ToolResult(tool="search_google", success=True, output={"ack": True})
     verified = verifier.verify(call, result, after={"visible_text": ["Loading"]})
     assert verified.ok is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_passes_model_plan_through_registry_and_verification(tmp_path) -> None:
+    from tom.approval import ApprovalGate
+    from tom.memory import MemoryStore
+    from tom.models import AgentRequest, Risk
+    from tom.planner import ModelPlanner, RulePlanner
+    from tom.response import Responder
+    from tom.tools import ToolRegistry
+
+    class PlannerLLM:
+        async def complete(self, messages, **kwargs):
+            return '{"goal":"read status","steps":[{"name":"status.read","arguments":{},"risk":"read"}]}'
+
+    class StatusTool:
+        name = "status.read"
+        description = "Read the current status."
+        risk = Risk.READ
+
+        async def run(self, arguments):
+            return {"status": "ready", "post_observation": {"status": "ready"}}
+
+    class TestResponder(Responder):
+        async def respond(self, **kwargs):
+            return "Status is ready."
+
+    registry = ToolRegistry({})
+    registry.register(StatusTool())
+    runtime = AgentRuntime(
+        ModelPlanner(PlannerLLM(), RulePlanner()),
+        registry,
+        MemoryStore(str(tmp_path)),
+        ApprovalGate(required=False),
+        responder=TestResponder(),
+    )
+
+    response = await runtime.handle(AgentRequest(message="read status"))
+
+    assert response.plan is not None
+    assert response.plan.steps[0].name == "status.read"
+    assert response.results[0].success is True
+    assert response.results[0].output["post_observation"]["status"] == "ready"
+    assert runtime.task_state(response.conversation_id)["live"]["last_action_status"] == "succeeded"

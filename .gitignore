@@ -1,5 +1,6 @@
 .env
 .tom-data/
+.models/
 data/
 __pycache__/
 *.py[cod]

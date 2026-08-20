@@ -249,9 +249,24 @@ class AgentRuntime:
                 events.append({"type": "action.failed", "action_id": action_id, "error": error, "step": step})
                 await self.events_bus.publish("action.failed", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "error": error, "step": step})
                 return ToolResult(tool=call.name, success=False, output=None, error=error)
-            before_state = dict((context or {}).get("screen_state") or {})
-            result = await tool.run(gated.arguments)
-            after_state = self._fresh_observation(result, {})
+            execution_context = context or {}
+            before_state = dict(execution_context.get("screen_state") or {})
+            raw_result = await tool.run(gated.arguments)
+            if isinstance(raw_result, ToolResult):
+                result = raw_result
+            elif isinstance(raw_result, dict):
+                result = ToolResult(
+                    tool=call.name,
+                    success=raw_result.get("ok", True) is not False,
+                    output=raw_result,
+                    error=str(raw_result.get("error")) if raw_result.get("error") else None,
+                )
+            else:
+                result = ToolResult(tool=call.name, success=raw_result is not None, output=raw_result)
+            after_state = self._fresh_observation(result, execution_context)
+            if after_state:
+                execution_context["screen_state"] = after_state
+                execution_context["screen_state_after"] = after_state
             predicate = self.action_verifier.verify(gated, result, before=before_state, after=after_state, provider=result.output if isinstance(result.output, dict) else {})
             events.append({"type": "VERIFICATION", "action_id": action_id, "tool": call.name, "verified": predicate.ok, "predicate": predicate.predicate, "confidence": predicate.confidence, "evidence": list(predicate.evidence), "reason": predicate.reason})
             await self.events_bus.publish("VERIFICATION", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "verified": predicate.ok, "predicate": predicate.predicate, "confidence": predicate.confidence, "evidence": list(predicate.evidence), "reason": predicate.reason})

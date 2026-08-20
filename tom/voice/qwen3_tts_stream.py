@@ -13,7 +13,7 @@ from .models import Language, VoiceProfile, VoiceStyle
 @dataclass(frozen=True)
 class Qwen3VoiceConfig:
     model_id: str = os.getenv("TOM_QWEN3_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
-    voice_design_model_id: str = os.getenv("TOM_QWEN3_TTS_VOICE_DESIGN_MODEL", "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
+    model_dir: str = os.getenv("TOM_QWEN3_TTS_MODEL_DIR", ".models/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice")
     device: str = os.getenv("TOM_QWEN3_TTS_DEVICE", "auto")
     dtype: str = os.getenv("TOM_QWEN3_TTS_DTYPE", "bfloat16")
     chunk_ms: int = int(os.getenv("TOM_QWEN3_TTS_CHUNK_MS", "80"))
@@ -67,6 +67,8 @@ class Qwen3TTSStreamingAdapter:
         self._torch: Any = None
 
     def _load(self, *, design: bool = False) -> Any:
+        if design:
+            raise RuntimeError("Qwen3-TTS production path supports CustomVoice only")
         slot = "_design_model" if design else "_custom_model"
         existing = getattr(self, slot)
         if existing is not None:
@@ -113,9 +115,13 @@ class Qwen3TTSStreamingAdapter:
                 "Qwen3-TTS dependencies are missing. Install the TOM voice-qwen extra."
             ) from exc
         self._torch = torch
-        device = None if self.config.device == "auto" else self.config.device
-        dtype = getattr(torch, self.config.dtype, torch.bfloat16)
-        model_id = self.config.voice_design_model_id if design else self.config.model_id
+        model_path = self.config.model_dir.strip()
+        if not os.path.isdir(model_path):
+            raise RuntimeError(f"MODEL_NOT_DOWNLOADED: {model_path}")
+        use_cuda = bool(torch.cuda.is_available())
+        device = ("cuda:0" if use_cuda else "cpu") if self.config.device == "auto" else self.config.device
+        dtype_name = self.config.dtype if use_cuda else os.getenv("TOM_QWEN3_TTS_CPU_DTYPE", "float32")
+        dtype = getattr(torch, dtype_name, torch.float32)
         kwargs: dict[str, Any] = {"dtype": dtype}
         if device:
             kwargs["device_map"] = device
@@ -124,7 +130,7 @@ class Qwen3TTSStreamingAdapter:
 
         # Codespaces/CPU-safe path: do not compile/stream-optimize on CPU.
         use_cuda = bool(torch.cuda.is_available())
-        model = Qwen3TTSModel.from_pretrained(model_id, **kwargs)
+        model = Qwen3TTSModel.from_pretrained(model_path, **kwargs)
 
         enable = getattr(model, "enable_streaming_optimizations", None)
         if callable(enable) and self.config.streaming and use_cuda:
@@ -171,8 +177,7 @@ class Qwen3TTSStreamingAdapter:
 
     def _generate(self, text: str, language: Language, voice: VoiceProfile, style: VoiceStyle) -> tuple[Any, int]:
         self._validate_language(language)
-        use_design = bool(style.prosody_plan.get("voice_design", self.config.voice_design_enabled))
-        model = self._load(design=use_design)
+        model = self._load()
         language_name = self._LANGUAGE_NAMES[language]
         instruction = str(style.prosody_plan.get("instruction") or self._instruction(
             style,
@@ -184,16 +189,28 @@ class Qwen3TTSStreamingAdapter:
             "temperature": float(style.prosody_plan.get("temperature", 0.62)),
             "top_p": float(style.prosody_plan.get("top_p", 0.90)),
         }
-        if use_design:
-            wavs, sr = model.generate_voice_design(
-                text=text, language=language_name, instruct=instruction, **kwargs
-            )
-        else:
-            speaker = self._SPEAKERS.get(voice.id, "Ryan")
-            wavs, sr = model.generate_custom_voice(
-                text=text, language=language_name, speaker=speaker, instruct=instruction, **kwargs
-            )
-        return wavs[0], int(sr)
+        speaker = self._SPEAKERS.get(voice.id, "Ryan")
+        wavs, sr = model.generate_custom_voice(
+            text=text, language=language_name, speaker=speaker, instruct=instruction, **kwargs
+        )
+        if not wavs:
+            raise RuntimeError("Qwen3-TTS returned no waveform")
+        sample_rate = int(sr)
+        if sample_rate != self.SAMPLE_RATE:
+            raise RuntimeError(f"Qwen3-TTS returned unsupported sample rate: {sample_rate}")
+        waveform = wavs[0]
+        try:
+            import numpy as np
+            array = waveform.detach().float().cpu().numpy() if hasattr(waveform, "detach") else np.asarray(waveform)
+            if array.ndim > 2 or (array.ndim == 2 and 1 not in array.shape):
+                raise RuntimeError(f"Qwen3-TTS returned unsupported channel shape: {array.shape}")
+            if array.size == 0 or not np.isfinite(array).all():
+                raise RuntimeError("Qwen3-TTS returned empty or non-finite audio")
+            if array.size > self.config.max_frames * (self.SAMPLE_RATE // 12):
+                raise RuntimeError("Qwen3-TTS returned audio longer than the configured limit")
+        except ImportError as exc:
+            raise RuntimeError("numpy is required for Qwen3-TTS audio validation") from exc
+        return waveform, sample_rate
 
     @staticmethod
     def _to_pcm16_bytes(chunk: Any) -> bytes:
@@ -215,43 +232,11 @@ class Qwen3TTSStreamingAdapter:
         if not self.config.streaming:
             return None
         self._validate_language(language)
-        use_design = bool(style.prosody_plan.get("voice_design", self.config.voice_design_enabled))
-        model = self._load(design=use_design)
-        language_name = self._LANGUAGE_NAMES[language]
-        instruction = str(style.prosody_plan.get("instruction") or self._instruction(
-            style,
-            character=str(style.prosody_plan.get("character", voice.label)),
-            traits=str(style.prosody_plan.get("character_traits", "")),
-        ))
-        common = {
-            "do_sample": True,
-            "temperature": float(style.prosody_plan.get("temperature", 0.62)),
-            "top_p": float(style.prosody_plan.get("top_p", 0.90)),
-            "emit_every_frames": self.config.emit_every_frames,
-            "decode_window_frames": self.config.decode_window_frames,
-            "overlap_samples": self.config.overlap_samples,
-            "max_frames": self.config.max_frames,
-        }
-        if self.config.first_chunk_emit_every > 0:
-            common.update(
-                first_chunk_emit_every=self.config.first_chunk_emit_every,
-                first_chunk_frames=self.config.first_chunk_frames,
-                first_chunk_decode_window=min(48, self.config.decode_window_frames),
-            )
-        if use_design:
-            fn = getattr(model, "stream_generate_voice_design", None)
-            if callable(fn):
-                for audio, sr in fn(text=text, language=language_name, instruct=instruction, **common):
-                    yield TTSChunk(pcm16=self._to_pcm16_bytes(audio), sample_rate=int(sr))
-                return
-            return None
-        speaker = self._SPEAKERS.get(voice.id, "Ryan")
-        fn = getattr(model, "stream_generate_custom_voice", None)
-        if callable(fn):
-            for audio, sr in fn(text=text, language=language_name, speaker=speaker, instruct=instruction, **common):
-                yield TTSChunk(pcm16=self._to_pcm16_bytes(audio), sample_rate=int(sr))
-            return
-        return None
+        waveform, sample_rate = self._generate(text, language, voice, style)
+        pcm16 = self._to_pcm16_bytes(waveform)
+        packet_bytes = max(320, int(self.SAMPLE_RATE * self.config.chunk_ms / 1000) * 2)
+        for offset in range(0, len(pcm16), packet_bytes):
+            yield TTSChunk(pcm16=pcm16[offset:offset + packet_bytes], sample_rate=sample_rate)
 
     def _stream_http(self, text: str, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk]:
         self._validate_language(language)
@@ -279,7 +264,8 @@ class Qwen3TTSStreamingAdapter:
             response.raise_for_status()
             expected_format = response.headers.get("x-tom-audio-format")
             expected_rate = response.headers.get("x-tom-sample-rate")
-            if expected_format != "pcm_s16le" or expected_rate != str(self.SAMPLE_RATE):
+            expected_channels = response.headers.get("x-tom-channels")
+            if expected_format != "pcm_s16le" or expected_rate != str(self.SAMPLE_RATE) or expected_channels != "1":
                 raise RuntimeError("Qwen3-TTS stream contract headers are invalid")
             buffer = bytearray()
             magic_checked = False
@@ -328,9 +314,8 @@ class Qwen3TTSStreamingAdapter:
             return
         if self.config.streaming:
             local_stream = self._stream_local(prompt, language, voice, style)
-            if local_stream is not None:
-                yield from local_stream
-                return
+            yield from local_stream
+            return
         try:
             import numpy as np
         except ImportError as exc:

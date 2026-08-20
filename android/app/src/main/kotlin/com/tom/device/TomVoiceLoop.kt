@@ -9,8 +9,6 @@ import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.os.Handler
 import android.os.Looper
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import okio.ByteString
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -33,9 +31,6 @@ class TomVoiceLoop(
     private var captureThread: Thread? = null
     private var echoCanceler: AcousticEchoCanceler? = null
     private val pcmPlayer = TomPcmPlayer(24_000)
-    private var fallbackTts: TextToSpeech? = null
-    private var fallbackReady = false
-    private var fallbackSpeaking = false
     private var startedAtMs = 0L
     private var responseAudioStartMs = 0L
     private var firstAudioAtMs = 0L
@@ -65,11 +60,6 @@ class TomVoiceLoop(
         coreSocket?.close(1000, "client_stop")
         coreSocket = null
         pcmPlayer.stop()
-        fallbackTts?.stop()
-        fallbackTts?.shutdown()
-        fallbackTts = null
-        fallbackReady = false
-        fallbackSpeaking = false
         onState("stopped")
     }
 
@@ -120,7 +110,6 @@ class TomVoiceLoop(
                             stopCapture()
                             if (running.get()) {
                                 onError("Voice core connection failed: ${t.message ?: "unknown error"}")
-                                startFallbackTts()
                             }
                         }
 
@@ -134,7 +123,6 @@ class TomVoiceLoop(
             coreReady.set(false)
             if (running.get()) {
                 onError("Voice core setup failed: ${it.message}")
-                startFallbackTts()
             }
         }
     }
@@ -253,24 +241,4 @@ class TomVoiceLoop(
         echoCanceler = null
     }
 
-    private fun startFallbackTts() {
-        if (!running.get() || fallbackTts != null) return
-        fallbackTts = TextToSpeech(context.applicationContext) { status ->
-            if (!running.get()) return@TextToSpeech
-            fallbackReady = status == TextToSpeech.SUCCESS
-            if (fallbackReady) {
-                fallbackTts?.setSpeechRate(0.98f)
-                fallbackTts?.setPitch(0.88f)
-                fallbackTts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String) { fallbackSpeaking = true; onState("fallback_speaking") }
-                    override fun onDone(utteranceId: String) { fallbackSpeaking = false; onState("fallback_listening") }
-                    override fun onError(utteranceId: String) { fallbackSpeaking = false }
-                    override fun onError(utteranceId: String, errorCode: Int) { fallbackSpeaking = false }
-                })
-                onState("fallback_tts_ready")
-            } else {
-                onError("Android fallback TTS unavailable")
-            }
-        }
-    }
 }

@@ -12,39 +12,10 @@ class HybridExpressiveTTS:
     """Language-aware open voice stack with graceful model fallback."""
 
     def __init__(self) -> None:
-        from .indic_parler_stream import IndicParlerStreamingAdapter
-
-        self.indic = IndicParlerStreamingAdapter()
         self.qwen: Any | None = None
-        self._qwen_error: str | None = None
-
-    def _qwen_backend(self):
-        if self.qwen is not None:
-            return self.qwen
-        if self._qwen_error:
-            return None
-        try:
-            from .qwen3_tts_stream import Qwen3TTSStreamingAdapter
-
-            self.qwen = Qwen3TTSStreamingAdapter()
-            return self.qwen
-        except Exception as exc:  # noqa: BLE001 - optional backend boundary
-            self._qwen_error = str(exc)
-            return None
-
-    @staticmethod
-    def _prefer_qwen(language: Language) -> bool:
-        return language is Language.EN
 
     def stream(self, text: str, *, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk]:
-        backend = self._qwen_backend() if self._prefer_qwen(language) else None
-        if backend is not None:
-            try:
-                yield from backend.stream(text, language=language, voice=voice, style=style)
-                return
-            except Exception as exc:  # noqa: BLE001 - optional backend fallback
-                self._qwen_error = str(exc)
-        yield from self.indic.stream(text, language=language, voice=voice, style=style)
+        raise RuntimeError("Hybrid voice routing is disabled; configure TOM_TTS_ENGINE=qwen3")
 
 
 def build_streaming_tts():
@@ -52,20 +23,8 @@ def build_streaming_tts():
     qwen_engines = {"qwen3", "qwen3-tts", "qwen"}
     if os.getenv("TOM_ENV", "development").strip().lower() == "production" and engine not in qwen_engines:
         raise RuntimeError("production TOM voice must use the Qwen3-TTS engine")
-    if engine in {"resilient", "qwen-space", "qwen-space-fallback", "hybrid", "adaptive", "auto"}:
-        from .resilient_tts import build_resilient_tts
-
-        return build_resilient_tts()
     if engine in qwen_engines:
         from .qwen3_tts_stream import Qwen3TTSStreamingAdapter
 
         return Qwen3TTSStreamingAdapter()
-    if engine in {"indic-parler", "parler", "indic_parler"}:
-        from .indic_parler_stream import IndicParlerStreamingAdapter
-
-        return IndicParlerStreamingAdapter()
-    if engine in {"cosyvoice", "cosyvoice3", "cosyvoice2"}:
-        from .cosyvoice_stream import CosyVoiceStreamingAdapter
-
-        return CosyVoiceStreamingAdapter()
-    raise RuntimeError(f"Unsupported TOM_TTS_ENGINE: {engine}")
+    raise RuntimeError(f"TOM_TTS_ENGINE must be qwen3; got {engine}")

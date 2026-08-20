@@ -5,7 +5,6 @@ import android.content.pm.PackageManager
 import android.util.Log
 import com.tom.device.TomAccessibilityService
 import com.tom.device.TomActionExecutor
-import com.tom.device.TomCommentaryPlayer
 import com.tom.device.TomLiveActivityStore
 import com.tom.device.ActionRequest
 import org.json.JSONObject
@@ -26,7 +25,6 @@ class TomBridgeRuntime(
     private val screenshotCapture = TomScreenshotCapture(service)
     private val screenshotChunker = TomScreenshotChunker()
     private val actionExecutor = TomActionExecutor(service)
-    private val commentary = TomCommentaryPlayer(service)
     private val reconnectHandler = Handler(Looper.getMainLooper())
     @Volatile private var stopping = false
     private val reconnect = Runnable { if (!stopping && !isConnected()) connect() }
@@ -44,7 +42,6 @@ class TomBridgeRuntime(
         reconnectHandler.removeCallbacks(reconnect)
         client?.close("client_disconnect")
         client = null
-        commentary.stop()
         TomLiveActivityStore.add("transport", "Disconnected", "TOM Core connection closed", true)
     }
 
@@ -94,7 +91,6 @@ class TomBridgeRuntime(
     private fun handleVoiceCommentary(payload: JSONObject?) {
         val text = payload?.optString("text", "") ?: ""
         if (text.isNotBlank()) {
-            commentary.speak(text, payload?.optString("language")?.takeIf { it.isNotBlank() })
             TomLiveActivityStore.add("voice", "TOM", text)
         }
     }
@@ -115,7 +111,7 @@ class TomBridgeRuntime(
         val detail = data.optString("message", data.optString("reply", data.optString("tool", data.optString("voice_text", ""))))
         val voiceText = data.optString("voice_text", "")
         TomLiveActivityStore.add("task", title, detail, type == "TASK_FAILED" || type == "task.failed")
-        if (voiceText.isNotBlank()) commentary.speak(voiceText, data.optString("language").takeIf { it.isNotBlank() })
+        if (voiceText.isNotBlank()) TomLiveActivityStore.add("voice", "TOM", voiceText)
     }
 
     fun sendObservation(snapshot: String, taskId: String? = null, actionId: String? = null) {
