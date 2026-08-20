@@ -37,6 +37,7 @@ class TomVoiceLoop(
     private var fallbackReady = false
     private var fallbackSpeaking = false
     private var startedAtMs = 0L
+    private var responseAudioStartMs = 0L
     private var firstAudioAtMs = 0L
 
     fun start() {
@@ -107,7 +108,8 @@ class TomVoiceLoop(
                             if (!running.get() || bytes.size == 0) return
                             if (firstAudioAtMs == 0L) {
                                 firstAudioAtMs = System.currentTimeMillis()
-                                onState("speaking • first_audio=${firstAudioAtMs - startedAtMs}ms")
+                                val responseLatency = if (responseAudioStartMs > 0L) firstAudioAtMs - responseAudioStartMs else -1L
+                                onState(if (responseLatency >= 0) "speaking • first_audio=${responseLatency}ms" else "speaking")
                             }
                             runCatching { pcmPlayer.write(bytes.toByteArray(), 24_000) }
                                 .onFailure { onError("PCM playback failed: ${it.message}") }
@@ -150,6 +152,7 @@ class TomVoiceLoop(
             "transcript" -> onTranscript(payload.optString("text"))
             "response_partial" -> Unit
             "audio_start" -> {
+                responseAudioStartMs = System.currentTimeMillis()
                 firstAudioAtMs = 0L
                 pcmPlayer.start()
                 onState("speaking")
@@ -174,7 +177,7 @@ class TomVoiceLoop(
     private fun startCapture() {
         if (!running.get() || !coreReady.get() || captureThread?.isAlive == true) return
         val sampleRate = 16_000
-        val frameBytes = 640 // 20 ms mono PCM16 at 16 kHz.
+        val frameBytes = 640
         val min = AudioRecord.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
