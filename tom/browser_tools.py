@@ -22,6 +22,8 @@ class BrowserRuntimeTool:
             return (await self.runtime.goto(str(arguments["url"]))).__dict__
         if self.name == "browser_snapshot":
             return (await self.runtime.snapshot()).__dict__
+        if self.name == "browser_screenshot":
+            return {"path": await self.runtime.screenshot(arguments.get("path"), full_page=bool(arguments.get("full_page", False)))}
         if self.name == "browser_click":
             return (await self.runtime.click(str(arguments["selector"]))).__dict__
         if self.name == "browser_click_text":
@@ -49,6 +51,8 @@ class BrowserRuntimeTool:
             return (await self.runtime.hover(str(arguments["selector"]))).__dict__
         if self.name == "browser_wait":
             return (await self.runtime.wait_for(arguments.get("selector"), int(arguments.get("timeout_ms", 1000)))).__dict__
+        if self.name == "browser_download":
+            return await self.runtime.download(str(arguments["selector"]), filename=arguments.get("filename"))
         if self.name == "browser_reload":
             return (await self.runtime.reload()).__dict__
         if self.name == "browser_back":
@@ -61,6 +65,7 @@ def register_browser_tools(registry: ToolRegistry) -> PlaywrightBrowser:
     definitions = (
         ("browser_open", "Open any permitted website visibly in TOM's browser.", Risk.LOW),
         ("browser_snapshot", "Observe the current browser page text and URL.", Risk.READ),
+        ("browser_screenshot", "Capture fresh browser pixels for grounding and verification.", Risk.READ),
         ("browser_click", "Click a grounded browser selector.", Risk.LOW),
         ("browser_click_text", "Click a visible browser text target.", Risk.LOW),
         ("browser_click_role", "Click a browser target using its accessible ARIA role and name.", Risk.LOW),
@@ -74,6 +79,7 @@ def register_browser_tools(registry: ToolRegistry) -> PlaywrightBrowser:
         ("browser_select", "Select a grounded option from a browser select.", Risk.LOW),
         ("browser_hover", "Hover a grounded browser target.", Risk.LOW),
         ("browser_wait", "Wait for a grounded page condition to stabilize.", Risk.READ),
+        ("browser_download", "Download a visible browser artifact into TOM's controlled data directory.", Risk.LOW),
         ("browser_reload", "Reload the current visible browser page.", Risk.LOW),
         ("browser_back", "Navigate back in the visible browser.", Risk.LOW),
     )
