@@ -17,6 +17,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
@@ -38,12 +39,23 @@ class MainActivity : Activity() {
 
         root = FrameLayout(this).apply { setBackgroundColor(Color.rgb(239, 247, 252)) }
         setContentView(root)
+        startConfiguredBridge()
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             view.updatePadding(left = bars.left, top = bars.top, right = bars.right, bottom = bars.bottom)
             insets
         }
         showSplash()
+    }
+
+    private fun startConfiguredBridge() {
+        val endpoint = BuildConfig.TOM_BRIDGE_WS_URL
+        val deviceId = BuildConfig.TOM_DEVICE_ID
+        if (!endpoint.startsWith("wss://") || deviceId.isBlank()) return
+        val intent = Intent(this, TomBridgeForegroundService::class.java)
+            .putExtra(TomBridgeForegroundService.EXTRA_ENDPOINT, endpoint)
+            .putExtra(TomBridgeForegroundService.EXTRA_DEVICE_ID, deviceId)
+        ContextCompat.startForegroundService(this, intent)
     }
 
     override fun onResume() {

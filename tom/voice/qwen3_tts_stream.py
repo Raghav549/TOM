@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import struct
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -43,6 +44,10 @@ class Qwen3TTSStreamingAdapter:
     """
 
     SAMPLE_RATE = 24000
+    STREAM_MAGIC = b"TOMQWEN1"
+    FRAME_AUDIO = 0
+    FRAME_ERROR = 1
+    FRAME_END = 2
     SUPPORTED_TOM_LANGUAGES: ClassVar[set[Language]] = {Language.EN}
 
     _LANGUAGE_NAMES: ClassVar[dict[Language, str]] = {
@@ -136,6 +141,9 @@ class Qwen3TTSStreamingAdapter:
 
     @staticmethod
     def _instruction(style: VoiceStyle, *, character: str = "", traits: str = "") -> str:
+        requested = str(style.prosody_plan.get("instruction", "")).strip()
+        if requested:
+            return requested
         emotion = style.emotion.value
         rate = "slower" if style.speaking_rate < 0.9 else "faster" if style.speaking_rate > 1.1 else "moderate"
         pitch = "lower-pitched" if style.pitch_shift < -0.15 else "higher-pitched" if style.pitch_shift > 0.15 else "natural-pitch"
@@ -166,11 +174,11 @@ class Qwen3TTSStreamingAdapter:
         use_design = bool(style.prosody_plan.get("voice_design", self.config.voice_design_enabled))
         model = self._load(design=use_design)
         language_name = self._LANGUAGE_NAMES[language]
-        instruction = self._instruction(
+        instruction = str(style.prosody_plan.get("instruction") or self._instruction(
             style,
             character=str(style.prosody_plan.get("character", voice.label)),
             traits=str(style.prosody_plan.get("character_traits", "")),
-        )
+        ))
         kwargs = {
             "do_sample": True,
             "temperature": float(style.prosody_plan.get("temperature", 0.62)),
@@ -210,11 +218,11 @@ class Qwen3TTSStreamingAdapter:
         use_design = bool(style.prosody_plan.get("voice_design", self.config.voice_design_enabled))
         model = self._load(design=use_design)
         language_name = self._LANGUAGE_NAMES[language]
-        instruction = self._instruction(
+        instruction = str(style.prosody_plan.get("instruction") or self._instruction(
             style,
             character=str(style.prosody_plan.get("character", voice.label)),
             traits=str(style.prosody_plan.get("character_traits", "")),
-        )
+        ))
         common = {
             "do_sample": True,
             "temperature": float(style.prosody_plan.get("temperature", 0.62)),
@@ -269,9 +277,46 @@ class Qwen3TTSStreamingAdapter:
         }
         with httpx.stream("POST", self.config.stream_url, json=payload, timeout=None) as response:
             response.raise_for_status()
+            expected_format = response.headers.get("x-tom-audio-format")
+            expected_rate = response.headers.get("x-tom-sample-rate")
+            if expected_format != "pcm_s16le" or expected_rate != str(self.SAMPLE_RATE):
+                raise RuntimeError("Qwen3-TTS stream contract headers are invalid")
+            buffer = bytearray()
+            magic_checked = False
+            ended = False
             for data in response.iter_bytes():
-                if data:
-                    yield TTSChunk(pcm16=data, sample_rate=self.SAMPLE_RATE)
+                buffer.extend(data)
+                if not magic_checked:
+                    if len(buffer) < len(self.STREAM_MAGIC):
+                        continue
+                    if bytes(buffer[:len(self.STREAM_MAGIC)]) != self.STREAM_MAGIC:
+                        raise RuntimeError("Qwen3-TTS stream magic is invalid")
+                    del buffer[:len(self.STREAM_MAGIC)]
+                    magic_checked = True
+                while len(buffer) >= 5:
+                    frame_type = buffer[0]
+                    frame_size = struct.unpack(">I", buffer[1:5])[0]
+                    if frame_size > 4 * 1024 * 1024:
+                        raise RuntimeError("Qwen3-TTS stream frame is too large")
+                    if len(buffer) < 5 + frame_size:
+                        break
+                    frame = bytes(buffer[5:5 + frame_size])
+                    del buffer[:5 + frame_size]
+                    if frame_type == self.FRAME_AUDIO:
+                        if not frame or len(frame) % 2:
+                            raise RuntimeError("Qwen3-TTS audio frame is not PCM16")
+                        yield TTSChunk(pcm16=frame, sample_rate=self.SAMPLE_RATE)
+                    elif frame_type == self.FRAME_ERROR:
+                        raise RuntimeError(frame.decode("utf-8", "replace") or "Qwen3-TTS server error")
+                    elif frame_type == self.FRAME_END:
+                        ended = True
+                        break
+                    else:
+                        raise RuntimeError("Qwen3-TTS stream frame type is invalid")
+                if ended:
+                    break
+            if not ended:
+                raise RuntimeError("Qwen3-TTS stream ended without an end frame")
 
     def stream(self, text: str, *, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk]:
         prompt = text.strip()
@@ -281,10 +326,7 @@ class Qwen3TTSStreamingAdapter:
         if self.config.stream_url:
             yield from self._stream_http(prompt, language, voice, style)
             return
-        # CPU/Codespaces: use reliable non-streaming generation.
-        # True streaming remains enabled automatically on CUDA.
-        import torch
-        if torch.cuda.is_available() and self.config.streaming:
+        if self.config.streaming:
             local_stream = self._stream_local(prompt, language, voice, style)
             if local_stream is not None:
                 yield from local_stream

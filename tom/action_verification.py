@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .models import ToolCall, ToolResult
+from .models import Risk, ToolCall, ToolResult
 from .strict_success_predicates import StrictSuccessPredicateEngine
 from .universal_action_contract import ActionType, build_action
 from .universal_verifier import verify_universal
@@ -214,6 +214,8 @@ class ActionSpecificVerifier:
                 return PredicateResult(True, "calendar.event_created", 0.99, ("event_id",), "calendar provider event id confirmed")
             return PredicateResult(False, "calendar.event_created", 0.0, (), "calendar creation is not confirmed")
         if kind == call.name and not expected:
+            if call.risk in {Risk.HIGH, Risk.CRITICAL}:
+                return PredicateResult(False, f"{call.name}.postcondition", 0.0, (), "consequential action has no action-specific success predicate")
             return PredicateResult(True, "tool_success", 0.75, ("tool_result",), "tool returned a successful result")
         verification = self._engine.verify({"kind": kind, "success_predicate": expected}, normalized_after)
         predicate = {"open_app": "open_app.expected_package", "tap": "tap.expected_ui_target", "tap_node": "tap.expected_ui_target", "search": "search.expected_result_state", "type": "set_text.expected_value", "send": "universal.send_message", "send_message": "universal.send_message", "create_calendar_event": "calendar.event_created", "upi": "upi.provider_success"}.get(kind, "tool_success")

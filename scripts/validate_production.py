@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+import asyncio
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 from tom.production import ProductionReadiness
 
@@ -22,7 +25,8 @@ REQUIRED_FOR_PRODUCTION = {
 
 
 def main() -> int:
-    report = ProductionReadiness().report()
+    load_dotenv()
+    report = asyncio.run(ProductionReadiness().probe())
     print(json.dumps(report, indent=2, sort_keys=True))
     if os.getenv("TOM_ENV", "development").lower() != "production":
         print("TOM_ENV is not production; validation completed in advisory mode.")

@@ -11,6 +11,8 @@ import com.tom.device.ActionRequest
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
+import android.os.Handler
+import android.os.Looper
 
 /** Android-side bridge runtime with policy-gated perception, action execution and live commentary. */
 class TomBridgeRuntime(
@@ -25,14 +27,21 @@ class TomBridgeRuntime(
     private val screenshotChunker = TomScreenshotChunker()
     private val actionExecutor = TomActionExecutor(service)
     private val commentary = TomCommentaryPlayer(service)
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+    @Volatile private var stopping = false
+    private val reconnect = Runnable { if (!stopping && !isConnected()) connect() }
 
     fun connect() {
+        stopping = false
+        reconnectHandler.removeCallbacks(reconnect)
         client?.close("reconnect")
         TomLiveActivityStore.add("transport", "Connecting", endpoint)
         client = TomWebSocketClient(endpoint, deviceId, sharedSecret, this).also { it.connect() }
     }
 
     fun disconnect() {
+        stopping = true
+        reconnectHandler.removeCallbacks(reconnect)
         client?.close("client_disconnect")
         client = null
         commentary.stop()
@@ -65,15 +74,15 @@ class TomBridgeRuntime(
     override fun onText(message: String) {
         try {
             val envelope = JSONObject(message)
-            when (envelope.optString("type")) {
-                "challenge" -> client?.respondToChallenge(envelope.optString("challenge"))
-                "action_request" -> handleAction(envelope)
-                "screenshot_request" -> captureScreenshot(envelope)
-                "observation_request" -> captureObservation(envelope)
-                "voice_commentary" -> handleVoiceCommentary(envelope.optJSONObject("payload"))
-                "task_event" -> handleTaskEvent(envelope.optJSONObject("payload") ?: envelope)
-                "ping" -> sendEnvelope("pong", JSONObject())
-                "revoke" -> disconnect()
+            when (envelope.optString("type").uppercase()) {
+                "CHALLENGE" -> client?.respondToChallenge(envelope.optString("challenge"))
+                "ACTION_REQUEST" -> handleAction(envelope)
+                "SCREENSHOT_REQUEST" -> captureScreenshot(envelope)
+                "OBSERVATION_REQUEST" -> captureObservation(envelope)
+                "VOICE_COMMENTARY" -> handleVoiceCommentary(envelope.optJSONObject("payload"))
+                "TASK_EVENT" -> handleTaskEvent(envelope.optJSONObject("payload") ?: envelope)
+                "PING" -> sendEnvelope("pong", JSONObject())
+                "REVOKE" -> disconnect()
                 else -> Log.d("TOM", "ignored bridge message")
             }
         } catch (t: Throwable) {
@@ -222,11 +231,17 @@ class TomBridgeRuntime(
     override fun onDisconnected(reason: String) {
         Log.w("TOM", "bridge disconnected: $reason")
         TomLiveActivityStore.add("transport", "Connection lost", reason, true)
+        scheduleReconnect()
     }
 
     override fun onError(error: Throwable) {
         Log.e("TOM", "bridge transport error", error)
         TomLiveActivityStore.add("error", "Connection error", error.message ?: "transport error")
+        scheduleReconnect()
+    }
+
+    private fun scheduleReconnect() {
+        if (!stopping) reconnectHandler.postDelayed(reconnect, 2_000L)
     }
 
     companion object {

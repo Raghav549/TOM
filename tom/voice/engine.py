@@ -53,37 +53,9 @@ class ExternalCommandSpeechEngine:
         style: VoiceStyle,
     ) -> bytes:
         if not self.config.command:
-            from .tts_factory import build_streaming_tts
-            import io
-            import wave
-
-            chunks = build_streaming_tts().stream(
-                text,
-                language=language,
-                voice=voice,
-                style=style,
+            raise RuntimeError(
+                "No external TTS engine configured; set TOM_TTS_COMMAND"
             )
-
-            pcm = bytearray()
-            sample_rate = 24000
-
-            for chunk in chunks:
-                data = getattr(chunk, "pcm16", None)
-                if data:
-                    pcm.extend(data)
-                    sample_rate = getattr(chunk, "sample_rate", sample_rate)
-
-            if not pcm:
-                raise RuntimeError("TTS stream returned no audio")
-
-            out = io.BytesIO()
-            with wave.open(out, "wb") as wav:
-                wav.setnchannels(1)
-                wav.setsampwidth(2)
-                wav.setframerate(sample_rate)
-                wav.writeframes(bytes(pcm))
-
-            return out.getvalue()
 
         with tempfile.TemporaryDirectory(prefix="tom-tts-") as tmp:
             root = Path(tmp)

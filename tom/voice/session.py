@@ -52,7 +52,10 @@ class VoiceSession:
             # Keep a stable named voice by default. VoiceDesign is deliberately
             # opt-in because recreating the character on every turn can change
             # timbre and is substantially heavier than CustomVoice.
-            "voice_design": signals.character_style not in {"friendly", "sigma", "default"} and bool(signals.character_traits) and signals.character_style == "voice_design",
+            "voice_design": (
+                bool(signals.character_traits)
+                and signals.character_style not in {"friendly", "sigma", "default", "friendly+sigma"}
+            ),
             "temperature": 0.62 if style.intensity < 0.65 else 0.68,
             "top_p": 0.90,
         }})

@@ -45,6 +45,7 @@ from tom.voice.director import ConversationSignals
 from tom.voice.engine import ExternalCommandSpeechEngine, SpeechEngineConfig
 from tom.voice.models import VOICE_PROFILES
 from tom.voice.session import VoiceSession
+from tom.voice.qwen3_tts_service import router as qwen3_tts_router
 
 app = FastAPI(title="TOM Agent Runtime", version="1.0.0")
 profile = CompanionProfile()
@@ -124,7 +125,22 @@ if vision_runtime is not None:
     app.include_router(build_device_websocket(vision_runtime))
 
 app.include_router(build_live_voice_websocket(runtime))
+app.include_router(qwen3_tts_router)
 voice_session = VoiceSession(ExternalCommandSpeechEngine(SpeechEngineConfig()))
+
+
+@app.on_event("startup")
+async def validate_production_startup() -> None:
+    if settings.environment.strip().lower() != "production":
+        return
+    report = await readiness.probe(browser=browser_runtime, device_sessions=android_bridge.sessions)
+    if not report["ready"]:
+        failed = ", ".join(
+            str(item["name"])
+            for item in report["checks"]
+            if not item["configured"]
+        )
+        raise RuntimeError(f"TOM production startup blocked; unavailable capabilities: {failed}")
 
 
 class ProfileUpdate(BaseModel):
@@ -183,12 +199,12 @@ async def health() -> dict[str, str]:
 
 @app.get("/ready")
 async def ready() -> dict[str, object]:
-    return readiness.report()
+    return await readiness.probe(browser=browser_runtime, device_sessions=android_bridge.sessions)
 
 
 @app.get("/v1/production/readiness")
 async def production_readiness() -> dict[str, object]:
-    return readiness.report()
+    return await readiness.probe(browser=browser_runtime, device_sessions=android_bridge.sessions)
 
 
 @app.get("/v1/integrations")

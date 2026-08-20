@@ -8,6 +8,7 @@ import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.net.URI
 import java.security.SecureRandom
+import java.security.MessageDigest
 import java.util.Base64
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -69,6 +70,13 @@ class TomWebSocketClient(
                 require(response.startsWith("HTTP/1.1 101") || response.startsWith("HTTP/1.0 101")) {
                     "WebSocket handshake rejected: $response"
                 }
+                val accept = response.lineSequence()
+                    .firstOrNull { it.substringBefore(':').trim().equals("Sec-WebSocket-Accept", ignoreCase = true) }
+                    ?.substringAfter(':', "")?.trim()
+                val expectedAccept = Base64.getEncoder().encodeToString(
+                    MessageDigest.getInstance("SHA-1").digest((wsKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").toByteArray(Charsets.US_ASCII))
+                )
+                require(accept == expectedAccept) { "WebSocket handshake accept validation failed" }
                 socket = ssl
                 output = out
                 post { listener.onConnected() }

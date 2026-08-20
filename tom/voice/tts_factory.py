@@ -6,8 +6,6 @@ from typing import Any
 
 from .cosyvoice_stream import TTSChunk
 from .models import Language, VoiceProfile, VoiceStyle
-from .qwen_space_stream import QwenSpaceTTS
-from .resilient_tts import ResilientTTS
 
 
 class HybridExpressiveTTS:
@@ -50,14 +48,15 @@ class HybridExpressiveTTS:
 
 
 def build_streaming_tts():
-    engine = os.getenv("TOM_TTS_ENGINE", "hybrid").strip().lower()
-    if engine in {"resilient", "qwen-space", "qwen-space-fallback"}:
+    engine = os.getenv("TOM_TTS_ENGINE", "qwen3").strip().lower()
+    qwen_engines = {"qwen3", "qwen3-tts", "qwen"}
+    if os.getenv("TOM_ENV", "development").strip().lower() == "production" and engine not in qwen_engines:
+        raise RuntimeError("production TOM voice must use the Qwen3-TTS engine")
+    if engine in {"resilient", "qwen-space", "qwen-space-fallback", "hybrid", "adaptive", "auto"}:
         from .resilient_tts import build_resilient_tts
 
         return build_resilient_tts()
-    if engine in {"hybrid", "adaptive", "auto"}:
-        return ResilientTTS()
-    if engine in {"qwen3", "qwen3-tts", "qwen"}:
+    if engine in qwen_engines:
         from .qwen3_tts_stream import Qwen3TTSStreamingAdapter
 
         return Qwen3TTSStreamingAdapter()
@@ -69,7 +68,4 @@ def build_streaming_tts():
         from .cosyvoice_stream import CosyVoiceStreamingAdapter
 
         return CosyVoiceStreamingAdapter()
-    if engine in {"qwen-space", "qwen_space", "qwen"}:
-        return QwenSpaceTTS()
-
     raise RuntimeError(f"Unsupported TOM_TTS_ENGINE: {engine}")

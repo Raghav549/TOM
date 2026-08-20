@@ -13,7 +13,9 @@ android {
         targetSdk = 35
         versionCode = 3
         versionName = "0.3.0"
-        buildConfigField("String", "TOM_VOICE_WS_URL", "\"ws://10.0.2.2:8787/v1/voice/ws\"")
+        buildConfigField("String", "TOM_VOICE_WS_URL", "\"${System.getenv("TOM_VOICE_WS_URL") ?: ""}\"")
+        buildConfigField("String", "TOM_BRIDGE_WS_URL", "\"${System.getenv("TOM_BRIDGE_WS_URL") ?: ""}\"")
+        buildConfigField("String", "TOM_DEVICE_ID", "\"${System.getenv("TOM_DEVICE_ID") ?: ""}\"")
     }
 
     buildFeatures {

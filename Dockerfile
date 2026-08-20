@@ -10,7 +10,8 @@ COPY pyproject.toml README.md LICENSE ./
 COPY tom ./tom
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir .
+  && pip install --no-cache-dir '.[browser,voice,voice-indic]' \
+  && playwright install --with-deps chromium
 
 EXPOSE 8787
 

@@ -1,5 +1,6 @@
 .env
 .tom-data/
+data/
 __pycache__/
 *.py[cod]
 .pytest_cache/

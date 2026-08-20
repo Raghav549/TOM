@@ -14,6 +14,13 @@ object TomBridgeRegistry {
             .also { it.connect() }
     }
 
+    fun connectStored(context: Context, endpoint: String, deviceId: String) {
+        val secret = com.tom.device.bridge.TomCredentialStore(context.applicationContext).read(deviceId)
+            ?: error("TOM device secret is not provisioned")
+        runtime?.disconnect()
+        runtime = TomBridgeRuntime(endpoint, deviceId, secret, TomAccessibilityService.instance()).also { it.connect() }
+    }
+
     fun disconnect() {
         runtime?.disconnect()
         runtime = null

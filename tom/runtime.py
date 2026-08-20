@@ -251,9 +251,7 @@ class AgentRuntime:
                 return ToolResult(tool=call.name, success=False, output=None, error=error)
             before_state = dict((context or {}).get("screen_state") or {})
             result = await tool.run(gated.arguments)
-            after_state = self._fresh_observation(result, context or {})
-            if call.name.startswith("device_") and not after_state:
-                after_state = dict((context or {}).get("screen_state") or {})
+            after_state = self._fresh_observation(result, {})
             predicate = self.action_verifier.verify(gated, result, before=before_state, after=after_state, provider=result.output if isinstance(result.output, dict) else {})
             events.append({"type": "VERIFICATION", "action_id": action_id, "tool": call.name, "verified": predicate.ok, "predicate": predicate.predicate, "confidence": predicate.confidence, "evidence": list(predicate.evidence), "reason": predicate.reason})
             await self.events_bus.publish("VERIFICATION", {"task_id": conversation_id, "action_id": action_id, "tool": call.name, "verified": predicate.ok, "predicate": predicate.predicate, "confidence": predicate.confidence, "evidence": list(predicate.evidence), "reason": predicate.reason})

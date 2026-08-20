@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any
 
 from .browser.runtime import PlaywrightBrowser
@@ -61,7 +62,12 @@ class BrowserRuntimeTool:
 
 
 def register_browser_tools(registry: ToolRegistry) -> PlaywrightBrowser:
-    runtime = PlaywrightBrowser(headless=False)
+    default_headless = "true" if os.getenv("TOM_ENV", "development").lower() == "production" else "false"
+    headless = os.getenv("TOM_BROWSER_HEADLESS", default_headless).lower() in {"1", "true", "yes", "on"}
+    runtime = PlaywrightBrowser(
+        headless=headless,
+        download_dir=os.getenv("TOM_BROWSER_DOWNLOAD_DIR", ".tom-data/downloads"),
+    )
     definitions = (
         ("browser_open", "Open any permitted website visibly in TOM's browser.", Risk.LOW),
         ("browser_snapshot", "Observe the current browser page text and URL.", Risk.READ),

@@ -3,6 +3,13 @@ from tom.voice.qwen3_tts_stream import Qwen3TTSStreamingAdapter, Qwen3VoiceConfi
 
 
 class FakeModel:
+    def generate_custom_voice(self, *args, **kwargs):
+        return self.generate_voice_design(*args, **kwargs)
+
+    def generate_voice_design(self, *args, **kwargs):
+        import numpy as np
+        return np.zeros(24000, dtype=np.float32), 24000
+
     def stream_generate_custom_voice(self, **kwargs):
         assert kwargs["text"] == "hello"
         assert kwargs["speaker"] == "Ryan"
