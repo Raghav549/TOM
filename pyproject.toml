@@ -37,6 +37,9 @@ voice-qwen = [
   "torch>=2.5,<3",
   "soundfile>=0.13,<1",
 ]
+voice-qwen-space = [
+  "gradio-client>=1.13,<2",
+]
 voice-neural = [
   "numpy>=1.26,<3",
   "faster-whisper>=1.2,<2",
