@@ -42,10 +42,10 @@ from tom.response import FriendlyFallback, ModelResponder
 from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry
 from tom.voice.director import ConversationSignals
-from tom.voice.engine import ExternalCommandSpeechEngine, SpeechEngineConfig
 from tom.voice.models import VOICE_PROFILES
 from tom.voice.session import VoiceSession
 from tom.voice.qwen3_tts_service import router as qwen3_tts_router
+from tom.voice.tts_factory import build_streaming_tts
 
 app = FastAPI(title="TOM Agent Runtime", version="1.0.0")
 profile = CompanionProfile()
@@ -93,17 +93,16 @@ async def on_core_result(result: dict) -> None:
         goal = str(task_state.get("goal") or "")
         device_id = str(result.get("device_id") or task_state.get("device_id") or "")
         if goal and device_id:
-            live_tasks.bind(
-                task_id,
-                goal,
-                device_id,
-                memory=runtime.memory.recent(task_id),
-            )
+            live_tasks.bind(task_id, goal, device_id, memory=runtime.memory.recent(task_id))
         bound = live_tasks.tasks.get(task_id)
         if bound:
             replanned = await live_tasks.on_verification(result, tools.describe())
             if replanned is not None:
-                await live_events.publish("plan.replanned", {"steps": len(replanned.steps), "goal": replanned.goal, "reason": "multimodal_verification_failed"}, task_id=task_id)
+                await live_events.publish(
+                    "plan.replanned",
+                    {"steps": len(replanned.steps), "goal": replanned.goal, "reason": "multimodal_verification_failed"},
+                    task_id=task_id,
+                )
                 for step in replanned.steps:
                     if not step.name.startswith("device_"):
                         continue
@@ -126,7 +125,11 @@ if vision_runtime is not None:
 
 app.include_router(build_live_voice_websocket(runtime))
 app.include_router(qwen3_tts_router)
-voice_session = VoiceSession(ExternalCommandSpeechEngine(SpeechEngineConfig()))
+
+# The active REST voice path uses the same Qwen3 engine as the live streaming path.
+voice_engine = build_streaming_tts()
+voice_session = VoiceSession(voice_engine)
+app.state.tom_voice_engine = voice_engine
 
 
 @app.on_event("startup")
@@ -135,11 +138,7 @@ async def validate_production_startup() -> None:
         return
     report = await readiness.probe(browser=browser_runtime, device_sessions=android_bridge.sessions)
     if not report["ready"]:
-        failed = ", ".join(
-            str(item["name"])
-            for item in report["checks"]
-            if not item["configured"]
-        )
+        failed = ", ".join(str(item["name"]) for item in report["checks"] if not item["configured"])
         raise RuntimeError(f"TOM production startup blocked; unavailable capabilities: {failed}")
 
 
@@ -310,8 +309,7 @@ async def capabilities() -> dict:
         "vision_runtime": vision_runtime is not None,
         "voice_profiles": list(VOICE_PROFILES),
         "voice_languages": ["hi", "en", "hinglish", "bn"],
-        "voice_engine": bool(os.getenv("TOM_TTS_COMMAND", "").strip()),
-        "streaming_voice_engine": bool(os.getenv("TOM_COSYVOICE_MODEL_DIR", "").strip()),
+        "voice_engine": True,
         "asr_engine": bool(os.getenv("TOM_ASR_MODEL", "").strip()),
         "neural_vad": os.getenv("TOM_NEURAL_VAD", "1").lower() not in {"0", "false", "no"},
         "learned_turn_prediction": bool(os.getenv("TOM_TURN_MODEL_PATH", "").strip()),
@@ -349,83 +347,21 @@ async def live_events_websocket(websocket: WebSocket) -> None:
 @app.post("/v1/voice/synthesize")
 async def synthesize_voice(request: VoiceSynthesisRequest) -> Response:
     try:
-        turn = voice_session.prepare_turn(request.text, voice_id=request.voice_id, signals=ConversationSignals(
-            user_text=request.text, situation=request.situation, urgency=request.urgency,
-            task_running=request.task_running, task_succeeded=request.task_succeeded,
-            task_failed=request.task_failed, user_is_sad=request.user_is_sad, user_is_excited=request.user_is_excited,
-        ))
+        turn = voice_session.prepare_turn(
+            request.text,
+            voice_id=request.voice_id,
+            signals=ConversationSignals(
+                user_text=request.text,
+                situation=request.situation,
+                urgency=request.urgency,
+                task_running=request.task_running,
+                task_succeeded=request.task_succeeded,
+                task_failed=request.task_failed,
+                user_is_sad=request.user_is_sad,
+                user_is_excited=request.user_is_excited,
+            ),
+        )
         audio = voice_session.synthesize(turn)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return Response(content=audio, media_type="audio/wav")
-
-
-@app.get("/v1/device/capabilities")
-async def device_capability_status() -> dict:
-    return {"capabilities": device_capabilities.describe()}
-
-
-@app.get("/v1/device/sessions")
-async def device_sessions() -> dict:
-    return {"connected_devices": sorted(android_bridge.sessions)}
-
-
-@app.get("/v1/tasks/{task_id}")
-async def task_state(task_id: str) -> dict:
-    state = runtime.task_state(task_id)
-    if state is None:
-        raise HTTPException(status_code=404, detail="task not found")
-    return state
-
-
-@app.get("/v1/profile")
-async def get_profile() -> dict:
-    return {"name": profile.name, "interests": sorted(profile.interests), "style": profile.style, "language": profile.language, "commentary_enabled": profile.commentary_enabled}
-
-
-@app.put("/v1/profile")
-async def update_profile(update: ProfileUpdate) -> dict:
-    if update.name is not None:
-        profile.name = update.name.strip() or "Tom"
-    if update.interests is not None:
-        profile.set_interests(update.interests)
-    if update.style is not None:
-        profile.style = update.style
-    if update.language is not None:
-        profile.language = update.language
-    if update.commentary_enabled is not None:
-        profile.commentary_enabled = update.commentary_enabled
-    return await get_profile()
-
-
-@app.post("/v1/agent")
-async def agent(request: AgentRequest):
-    response = await runtime.handle(request)
-    goal = str(request.message)
-    device_id = str(request.context.get("device_id", "")).strip()
-    if device_id:
-        live_tasks.bind(request.conversation_id, goal, device_id, memory=runtime.memory.recent(request.conversation_id))
-        await live_events.publish("task.started", {"goal": goal, "device_id": device_id}, task_id=request.conversation_id)
-    for event in response.events:
-        await live_events.publish(event.get("type", "task.event"), event, task_id=request.conversation_id)
-    return response
-
-
-@app.get("/v1/approvals/{conversation_id}")
-async def pending_approvals(conversation_id: str):
-    return {"conversation_id": conversation_id, "items": runtime.pending(conversation_id)}
-
-
-@app.post("/v1/approval")
-async def approve(request: ApprovalRequest):
-    try:
-        return await runtime.approve_and_execute(request.conversation_id, request.tool_index)
-    except IndexError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (PermissionError, RuntimeError) as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-
-
-@app.get("/v1/memory/{conversation_id}")
-async def memory(conversation_id: str):
-    return {"conversation_id": conversation_id, "items": runtime.memory.recent(conversation_id)}
