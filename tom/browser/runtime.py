@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .safety import BrowserSafetyPolicy
@@ -16,9 +17,10 @@ class BrowserSnapshot:
 class PlaywrightBrowser:
     """Real visible browser runtime with grounded interaction primitives."""
 
-    def __init__(self, *, allowed_hosts: set[str] | None = None, headless: bool = False) -> None:
+    def __init__(self, *, allowed_hosts: set[str] | None = None, headless: bool = False, download_dir: str = ".tom-data/downloads") -> None:
         self.policy = BrowserSafetyPolicy(allowed_hosts=allowed_hosts)
         self.headless = headless
+        self.download_dir = Path(download_dir)
         self._playwright: Any = None
         self._browser: Any = None
         self._context: Any = None
@@ -37,7 +39,8 @@ class PlaywrightBrowser:
             raise RuntimeError("Install TOM browser support with the browser extra") from exc
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(headless=self.headless)
-        self._context = await self._browser.new_context()
+        self.download_dir.mkdir(parents=True, exist_ok=True)
+        self._context = await self._browser.new_context(accept_downloads=True)
         self._page = await self._context.new_page()
 
     async def close(self) -> None:
@@ -66,6 +69,13 @@ class PlaywrightBrowser:
         page = self._require_page()
         text = await page.locator("body").inner_text(timeout=5_000)
         return BrowserSnapshot(page.url, await page.title(), text[:max_text])
+
+    async def screenshot(self, path: str | None = None, *, full_page: bool = False) -> str:
+        page = self._require_page()
+        target = Path(path) if path else self.download_dir / "browser-current.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        await page.screenshot(path=str(target), full_page=full_page)
+        return str(target)
 
     async def click(self, selector: str) -> BrowserSnapshot:
         page = self._require_page()
@@ -133,6 +143,16 @@ class PlaywrightBrowser:
         else:
             await page.wait_for_timeout(timeout_ms)
         return await self.snapshot()
+
+    async def download(self, selector: str, *, filename: str | None = None) -> dict[str, str]:
+        page = self._require_page()
+        async with page.expect_download() as pending:
+            await page.locator(selector).first.click()
+        download = await pending.value
+        suggested = filename or download.suggested_filename
+        target = self.download_dir / Path(suggested).name
+        await download.save_as(str(target))
+        return {"path": str(target), "filename": target.name}
 
     async def reload(self) -> BrowserSnapshot:
         page = self._require_page()
