@@ -10,10 +10,14 @@ def test_three_tom_voice_identities_are_distinct():
 
 def test_indic_parler_language_speaker_mapping():
     adapter = IndicParlerStreamingAdapter()
-    assert adapter._speaker_for(Language.HI, adapter.VOICES["tom_m1"]) == "Rohit"
-    assert adapter._speaker_for(Language.HI, adapter.VOICES["tom_f1"]) == "Divya"
-    assert adapter._speaker_for(Language.BN, adapter.VOICES["tom_m1"]) == "Arjun"
-    assert adapter._speaker_for(Language.EN, adapter.VOICES["tom_f1"]) == "Mary"
+    assert adapter._speaker_for(Language.HI, VOICE_PROFILES["tom_m1"]) == "Rohit"
+    assert adapter._speaker_for(Language.HI, VOICE_PROFILES["tom_m2"]) == "Aman"
+    assert adapter._speaker_for(Language.HI, VOICE_PROFILES["tom_f1"]) == "Divya"
+    assert adapter._speaker_for(Language.HINGLISH, VOICE_PROFILES["tom_m2"]) == "Aman"
+    assert adapter._speaker_for(Language.BN, VOICE_PROFILES["tom_m1"]) == "Arjun"
+    assert adapter._speaker_for(Language.BN, VOICE_PROFILES["tom_m2"]) == "Tapan"
+    assert adapter._speaker_for(Language.BN, VOICE_PROFILES["tom_f1"]) == "Aditi"
+    assert adapter._speaker_for(Language.EN, VOICE_PROFILES["tom_f1"]) == "Mary"
 
 
 def test_indic_parler_description_contains_conversational_controls():
