@@ -61,6 +61,7 @@ if settings.llm_enabled:
     planner = ModelPlanner(llm, fallback_planner)
     responder = ModelResponder(llm, fallback_responder)
 else:
+    llm = None
     planner = fallback_planner
     responder = fallback_responder
 
@@ -98,11 +99,7 @@ async def on_core_result(result: dict) -> None:
         if bound:
             replanned = await live_tasks.on_verification(result, tools.describe())
             if replanned is not None:
-                await live_events.publish(
-                    "plan.replanned",
-                    {"steps": len(replanned.steps), "goal": replanned.goal, "reason": "multimodal_verification_failed"},
-                    task_id=task_id,
-                )
+                await live_events.publish("plan.replanned", {"steps": len(replanned.steps), "goal": replanned.goal, "reason": "multimodal_verification_failed"}, task_id=task_id)
                 for step in replanned.steps:
                     if not step.name.startswith("device_"):
                         continue
@@ -126,7 +123,6 @@ if vision_runtime is not None:
 app.include_router(build_live_voice_websocket(runtime))
 app.include_router(qwen3_tts_router)
 
-# The active REST voice path uses the same Qwen3 engine as the live streaming path.
 voice_engine = build_streaming_tts()
 voice_session = VoiceSession(voice_engine)
 app.state.tom_voice_engine = voice_engine
@@ -347,20 +343,11 @@ async def live_events_websocket(websocket: WebSocket) -> None:
 @app.post("/v1/voice/synthesize")
 async def synthesize_voice(request: VoiceSynthesisRequest) -> Response:
     try:
-        turn = voice_session.prepare_turn(
-            request.text,
-            voice_id=request.voice_id,
-            signals=ConversationSignals(
-                user_text=request.text,
-                situation=request.situation,
-                urgency=request.urgency,
-                task_running=request.task_running,
-                task_succeeded=request.task_succeeded,
-                task_failed=request.task_failed,
-                user_is_sad=request.user_is_sad,
-                user_is_excited=request.user_is_excited,
-            ),
-        )
+        turn = voice_session.prepare_turn(request.text, voice_id=request.voice_id, signals=ConversationSignals(
+            user_text=request.text, situation=request.situation, urgency=request.urgency,
+            task_running=request.task_running, task_succeeded=request.task_succeeded,
+            task_failed=request.task_failed, user_is_sad=request.user_is_sad, user_is_excited=request.user_is_excited,
+        ))
         audio = voice_session.synthesize(turn)
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
