@@ -14,25 +14,32 @@ from .models import Language, VoiceProfile, VoiceStyle
 class QwenSpaceTTS:
     SPACE = os.getenv("TOM_QWEN_SPACE", "Qwen/Qwen3-TTS")
     CHUNK_MS = 200
-    SPEAKERS = {
-        "tom_m1": "Ryan",
-        "tom_m2": "Aiden",
-        "tom_f1": "Serena",
-    }
 
     def __init__(self) -> None:
         self.client = Client(self.SPACE)
 
     @staticmethod
     def _language(language: Language) -> str:
-        if language in {Language.EN, Language.HINGLISH}:
+        name = getattr(language, "name", "")
+        value = getattr(language, "value", "")
+
+        if name in {"EN", "ENGLISH"} or value in {"en", "English"}:
             return "English"
-        raise RuntimeError("Qwen3 CustomVoice Space currently supports English only")
+        if name in {"HI", "HINDI"} or value in {"hi", "Hindi"}:
+            return "Hindi"
+
+        return "English"
 
     @staticmethod
-    def _instruction(style: VoiceStyle) -> str:
-        emotion = getattr(style.emotion, "value", str(style.emotion))
+    def _voice_description(
+        voice: VoiceProfile,
+        style: VoiceStyle,
+    ) -> str:
+        gender = getattr(voice, "gender", "male")
+        name = getattr(voice, "name", "Rohit")
+
         rate = getattr(style, "speaking_rate", 1.0)
+
         speed = (
             "moderately fast"
             if rate > 1.1
@@ -40,9 +47,13 @@ class QwenSpaceTTS:
             if rate < 0.9
             else "natural conversational"
         )
+
         return (
-            f"Speak in a {emotion} tone, with {speed} pacing, natural pauses, "
-            "clear pronunciation, and warm conversational delivery."
+            f"A warm Indian {gender} voice named {name}. "
+            f"Natural human conversational delivery, {speed} speaking rate, "
+            "clear pronunciation, friendly and intelligent personality, "
+            "subtle emotion, natural pauses and realistic breathing. "
+            "Do not sound robotic or like a news reader."
         )
 
     def _generate(
@@ -51,18 +62,16 @@ class QwenSpaceTTS:
         language: Language,
         voice: VoiceProfile,
         style: VoiceStyle,
-    ) -> Path:
-        speaker = self.SPEAKERS.get(voice.id, "Ryan")
+    ):
         audio, status = self.client.predict(
             text=text,
             language=self._language(language),
-            speaker=speaker,
-            instruct=self._instruction(style),
-            api_name="/generate_custom_voice",
+            voice_description=self._voice_description(voice, style),
+            api_name="/generate_voice_design",
         )
 
         if not audio:
-            raise RuntimeError(f"Qwen ZeroGPU Space returned no audio. Status={status}")
+            raise RuntimeError(f"Qwen Space returned no audio. Status={status}")
 
         return Path(audio)
 
@@ -74,6 +83,7 @@ class QwenSpaceTTS:
         voice: VoiceProfile,
         style: VoiceStyle,
     ) -> Iterator[TTSChunk]:
+
         audio_path = self._generate(text, language, voice, style)
 
         with wave.open(str(audio_path), "rb") as wav:
@@ -84,10 +94,14 @@ class QwenSpaceTTS:
 
         if channels != 1 or sample_width != 2:
             raise RuntimeError(
-                f"Unexpected Qwen audio format: channels={channels}, sample_width={sample_width}"
+                f"Unexpected Qwen audio format: "
+                f"channels={channels}, sample_width={sample_width}"
             )
 
-        bytes_per_chunk = int(sample_rate * self.CHUNK_MS / 1000) * 2
+        bytes_per_chunk = int(
+            sample_rate * self.CHUNK_MS / 1000
+        ) * 2
+
         for i in range(0, len(pcm), bytes_per_chunk):
             yield TTSChunk(
                 pcm16=pcm[i:i + bytes_per_chunk],
