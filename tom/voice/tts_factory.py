@@ -9,12 +9,7 @@ from .models import Language, VoiceProfile, VoiceStyle
 
 
 class HybridExpressiveTTS:
-    """Language-aware open voice stack with graceful model fallback.
-
-    English and other Qwen-supported languages prefer Qwen3-TTS for fine-grained
-    character/style control. Indic languages prefer Indic Parler-TTS. If an optional
-    backend is not installed, the adapter falls back to the available open backend.
-    """
+    """Language-aware open voice stack with graceful model fallback."""
 
     def __init__(self) -> None:
         from .indic_parler_stream import IndicParlerStreamingAdapter
@@ -54,6 +49,10 @@ class HybridExpressiveTTS:
 
 def build_streaming_tts():
     engine = os.getenv("TOM_TTS_ENGINE", "hybrid").strip().lower()
+    if engine in {"resilient", "qwen-space", "qwen-space-fallback"}:
+        from .resilient_tts import build_resilient_tts
+
+        return build_resilient_tts()
     if engine in {"hybrid", "adaptive", "auto"}:
         return HybridExpressiveTTS()
     if engine in {"qwen3", "qwen3-tts", "qwen"}:
