@@ -17,7 +17,9 @@ class Settings:
     data_dir: Path = Path(os.getenv("TOM_DATA_DIR", ".tom-data"))
     approval_required: bool = os.getenv("TOM_APPROVAL_REQUIRED", "true").lower() == "true"
     llm_enabled: bool = os.getenv("TOM_LLM_ENABLED", "true").lower() == "true"
-    llm_base_url: str = os.getenv("TOM_LLM_BASE_URL", "https://api-inference.modelscope.ai/v1")
+    # Current ModelScope API-Inference endpoint. Keep this overrideable so TOM
+    # can still use any OpenAI-compatible provider without changing code.
+    llm_base_url: str = os.getenv("TOM_LLM_BASE_URL", "https://api-inference.modelscope.cn/v1")
     llm_api_key: str = os.getenv("TOM_LLM_API_KEY", "")
     llm_model: str = os.getenv("TOM_LLM_MODEL", "Qwen/Qwen3-8B")
     vision_base_url: str = os.getenv("TOM_VISION_BASE_URL", "")
