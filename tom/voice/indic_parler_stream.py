@@ -52,7 +52,7 @@ class IndicParlerStreamingAdapter:
                 "Indic Parler-TTS dependencies are missing. Install the TOM voice-indic extra."
             ) from exc
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype = torch.float16 if self._device == "cuda" else torch.float32
+        dtype = torch.float16
         self._model = ParlerTTSForConditionalGeneration.from_pretrained(
             self.MODEL_ID, torch_dtype=dtype
         ).to(self._device)

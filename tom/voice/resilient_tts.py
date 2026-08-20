@@ -1,47 +1,113 @@
 from __future__ import annotations
 
-import os
-from collections.abc import Iterator
+import logging
+from typing import Iterator
 
 from .cosyvoice_stream import TTSChunk
 from .models import Language, VoiceProfile, VoiceStyle
 
+log = logging.getLogger(__name__)
+
 
 class ResilientTTS:
-    """Primary/secondary TTS routing with truthful failure semantics."""
+    """
+    TOM resilient voice backend.
+
+    Primary:
+        Qwen3-TTS Hugging Face Space
+
+    Fallback:
+        Indic Parler-TTS
+
+    The fallback is only invoked when the primary backend fails
+    before/during synthesis.
+    """
 
     def __init__(self) -> None:
+        from .qwen_space_stream import QwenSpaceTTS
         from .indic_parler_stream import IndicParlerStreamingAdapter
-        from .qwen_space_stream import Qwen3TTSSpaceAdapter
 
-        self.primary = Qwen3TTSSpaceAdapter()
-        self.fallback = IndicParlerStreamingAdapter()
-        self.last_backend = ""
+        self.qwen = QwenSpaceTTS()
+        self.indic = IndicParlerStreamingAdapter()
 
-    def stream(self, text: str, *, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk]:
-        prompt = text.strip()
-        if not prompt:
-            return
-        primary_error: Exception | None = None
-        if os.getenv("TOM_QWEN3_TTS_SPACE_ENABLED", "true").lower() not in {"0", "false", "no"}:
-            try:
-                chunks = list(self.primary.stream(prompt, language=language, voice=voice, style=style))
-                if chunks:
-                    self.last_backend = "qwen3-tts-space"
-                    yield from chunks
-                    return
-                primary_error = RuntimeError("Qwen3-TTS Space returned zero audio chunks")
-            except Exception as exc:  # noqa: BLE001 - provider boundary
-                primary_error = exc
+        self.primary_name = "QwenSpaceTTS"
+        self.fallback_name = "IndicParlerTTS"
+
+    def stream(
+        self,
+        text: str,
+        *,
+        language: Language,
+        voice: VoiceProfile,
+        style: VoiceStyle,
+    ) -> Iterator[TTSChunk]:
+
+        # PRIMARY: Qwen remote ZeroGPU
         try:
-            chunks = list(self.fallback.stream(prompt, language=language, voice=voice, style=style))
+            log.info("TOM TTS primary backend: %s", self.primary_name)
+
+            chunks = list(
+                self.qwen.stream(
+                    text,
+                    language=language,
+                    voice=voice,
+                    style=style,
+                )
+            )
+
+            if chunks:
+                log.info(
+                    "TOM TTS primary succeeded: %d chunks",
+                    len(chunks),
+                )
+
+                for chunk in chunks:
+                    yield chunk
+
+                return
+
+            raise RuntimeError("Qwen returned zero audio")
+
+        except Exception as primary_error:
+            log.warning(
+                "Qwen TTS failed; switching to %s: %s",
+                self.fallback_name,
+                primary_error,
+            )
+
+        # FALLBACK: Indic Parler-TTS
+        try:
+            log.info(
+                "TOM TTS fallback backend: %s",
+                self.fallback_name,
+            )
+
+            chunks = list(
+                self.indic.stream(
+                    text,
+                    language=language,
+                    voice=voice,
+                    style=style,
+                )
+            )
+
             if not chunks:
-                raise RuntimeError("Indic Parler-TTS returned zero audio chunks")
-            self.last_backend = "indic-parler"
-            yield from chunks
-        except Exception as fallback_error:  # noqa: BLE001 - provider boundary
-            details = f"primary={primary_error!s}; fallback={fallback_error!s}"
-            raise RuntimeError(f"TOM TTS exhausted all configured backends: {details}") from fallback_error
+                raise RuntimeError("Indic Parler returned zero audio")
+
+            log.info(
+                "TOM TTS fallback succeeded: %d chunks",
+                len(chunks),
+            )
+
+            for chunk in chunks:
+                yield chunk
+
+        except Exception as fallback_error:
+            raise RuntimeError(
+                "All TOM TTS backends failed. "
+                f"Primary=QwenSpaceTTS; Fallback=IndicParlerTTS; "
+                f"fallback_error={fallback_error}"
+            ) from fallback_error
 
 
 def build_resilient_tts() -> ResilientTTS:
