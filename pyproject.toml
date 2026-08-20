@@ -40,6 +40,10 @@ voice-qwen = [
 voice-qwen-space = [
   "gradio-client>=1.13,<2",
 ]
+memory = [
+  "numpy>=1.26,<3",
+  "sentence-transformers>=5,<6",
+]
 voice-neural = [
   "numpy>=1.26,<3",
   "faster-whisper>=1.2,<2",
