@@ -16,7 +16,7 @@ class IndicParlerVoice:
 
 
 class IndicParlerStreamingAdapter:
-    """Open-source Indic Parler-TTS adapter with character/prosody prompting."""
+    """Open-source Indic Parler-TTS adapter with stable TOM voice identity."""
 
     MODEL_ID = os.getenv("TOM_INDIC_PARLER_MODEL", "ai4bharat/indic-parler-tts")
     SAMPLE_RATE = 24_000
@@ -25,6 +25,13 @@ class IndicParlerStreamingAdapter:
         "tom_m1": IndicParlerVoice("Rohit", "male"),
         "tom_m2": IndicParlerVoice("Aman", "male"),
         "tom_f1": IndicParlerVoice("Divya", "female"),
+    }
+
+    LANGUAGE_SPEAKERS: ClassVar[dict[Language, dict[str, str]]] = {
+        Language.HI: {"tom_m1": "Rohit", "tom_m2": "Aman", "tom_f1": "Divya"},
+        Language.HINGLISH: {"tom_m1": "Rohit", "tom_m2": "Aman", "tom_f1": "Divya"},
+        Language.BN: {"tom_m1": "Arjun", "tom_m2": "Tapan", "tom_f1": "Aditi"},
+        Language.EN: {"tom_m1": "Thoma", "tom_m2": "Dinesh", "tom_f1": "Mary"},
     }
 
     def __init__(self) -> None:
@@ -55,17 +62,20 @@ class IndicParlerStreamingAdapter:
             self._model.config.text_encoder._name_or_path
         )
 
-    @staticmethod
-    def _speaker_for(language: Language, voice: IndicParlerVoice) -> str:
-        female = voice.gender == "female"
-        table = {
-            Language.HI: ("Rohit", "Divya"),
-            Language.EN: ("Thoma", "Mary"),
-            Language.HINGLISH: ("Rohit", "Divya"),
-            Language.BN: ("Arjun", "Sita"),
-        }
-        male, female_name = table.get(language, ("Rohit", "Divya"))
-        return female_name if female else male
+    @classmethod
+    def _speaker_for(cls, language: Language, voice: IndicParlerVoice | VoiceProfile) -> str:
+        voice_id = voice.id if isinstance(voice, VoiceProfile) else None
+        table = cls.LANGUAGE_SPEAKERS.get(language, cls.LANGUAGE_SPEAKERS[Language.HI])
+        if voice_id in table:
+            return table[voice_id]
+        if isinstance(voice, IndicParlerVoice):
+            if language in {Language.HI, Language.HINGLISH}:
+                return "Divya" if voice.gender == "female" else "Rohit"
+            if language is Language.BN:
+                return "Aditi" if voice.gender == "female" else "Arjun"
+            if language is Language.EN:
+                return "Mary" if voice.gender == "female" else "Thoma"
+        return table["tom_f1" if voice.gender == "female" else "tom_m1"]
 
     @staticmethod
     def _emotion_phrase(style: VoiceStyle) -> str:
@@ -86,7 +96,7 @@ class IndicParlerStreamingAdapter:
 
     def _description(self, voice: VoiceProfile, language: Language, style: VoiceStyle) -> str:
         profile = self.VOICES.get(voice.id, self.VOICES["tom_m1"])
-        speaker = self._speaker_for(language, profile)
+        speaker = self._speaker_for(language, voice)
         rate = "slow" if style.speaking_rate < 0.88 else "fast" if style.speaking_rate > 1.12 else "moderate"
         pitch = "low" if style.pitch_shift < -0.2 else "high" if style.pitch_shift > 0.2 else "moderate"
         character = str(style.prosody_plan.get("character", "TOM"))
