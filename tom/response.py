@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,57 +43,29 @@ class ModelResponder(Responder):
         messages = self._messages(user_message=user_message, events=events, context=context)
         try:
             return (await self.llm.complete(messages, temperature=0.7)).strip()
-        except Exception:  # noqa: BLE001 - model providers are external boundaries
+        except Exception as exc:  # noqa: BLE001
+            # The LLM is the production response provider. Keep the fallback only
+            # for explicit non-production/offline operation; do not hide provider
+            # outages in production behind a fake-looking success response.
+            if str(context.get("environment", "development")).lower() == "production":
+                raise RuntimeError(f"Qwen LLM response unavailable: {type(exc).__name__}") from exc
             return await self.fallback.respond(user_message=user_message, events=events, context=context)
 
     async def stream(self, *, user_message: str, events: list[dict[str, Any]], context: dict[str, Any]) -> AsyncIterator[str]:
-        messages = self._messages(user_message=user_message, events=events, context=context)
-        stream_method = getattr(self.llm, "stream", None)
-        if stream_method is None:
-            stream_method = getattr(self.llm, "astream", None)
-        if stream_method is None:
-            yield await self.respond(user_message=user_message, events=events, context=context)
-            return
+        # OpenAICompatibleLLM.complete is the verified ModelScope/Qwen streaming
+        # primitive. Consume it as the production stream rather than relying on
+        # a nonexistent .stream() method on the provider adapter.
         try:
-            result = stream_method(messages, temperature=0.7)
-            if inspect.isawaitable(result):
-                result = await result
-            if hasattr(result, "__aiter__"):
-                async for item in result:
-                    text = self._extract_text(item)
-                    if text:
-                        yield text
-            else:
-                for item in result:
-                    text = self._extract_text(item)
-                    if text:
-                        yield text
-        except Exception:  # noqa: BLE001 - model providers are external boundaries
-            yield await self.respond(user_message=user_message, events=events, context=context)
-
-    @staticmethod
-    def _extract_text(item: Any) -> str:
-        if isinstance(item, str):
-            return item
-        if isinstance(item, dict):
-            for key in ("text", "content", "delta"):
-                value = item.get(key)
-                if isinstance(value, str):
-                    return value
-            choices = item.get("choices")
-            if isinstance(choices, list) and choices:
-                choice = choices[0]
-                if isinstance(choice, dict):
-                    delta = choice.get("delta") or choice.get("message") or {}
-                    if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-                        return delta["content"]
-        for attr in ("text", "content"):
-            value = getattr(item, attr, None)
-            if isinstance(value, str):
-                return value
-        delta = getattr(item, "delta", None)
-        value = getattr(delta, "content", None)
-        return value if isinstance(value, str) else ""
+            text = await self.llm.complete(
+                self._messages(user_message=user_message, events=events, context=context),
+                temperature=0.7,
+            )
+            if text:
+                yield text
+        except Exception as exc:  # noqa: BLE001
+            if str(context.get("environment", "development")).lower() == "production":
+                raise RuntimeError(f"Qwen LLM streaming unavailable: {type(exc).__name__}") from exc
+            yield await self.fallback.respond(user_message=user_message, events=events, context=context)
 
 
 class FriendlyFallback(Responder):
