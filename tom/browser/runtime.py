@@ -15,7 +15,7 @@ class BrowserSnapshot:
 
 
 class PlaywrightBrowser:
-    """Real visible browser runtime with grounded interaction primitives."""
+    """Real visible browser runtime with guarded navigation and grounded actions."""
 
     def __init__(self, *, allowed_hosts: set[str] | None = None, headless: bool = False, download_dir: str = ".tom-data/downloads") -> None:
         self.policy = BrowserSafetyPolicy(allowed_hosts=allowed_hosts)
@@ -42,6 +42,8 @@ class PlaywrightBrowser:
         self.download_dir.mkdir(parents=True, exist_ok=True)
         self._context = await self._browser.new_context(accept_downloads=True)
         self._page = await self._context.new_page()
+        self._page.set_default_timeout(10_000)
+        self._page.set_default_navigation_timeout(30_000)
 
     async def close(self) -> None:
         if self._context is not None:
@@ -62,7 +64,12 @@ class PlaywrightBrowser:
         if not decision.allowed:
             raise PermissionError(f"browser navigation blocked: {decision.reason}")
         page = self._require_page()
-        await page.goto(url, wait_until="domcontentloaded")
+        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        # Re-check the final URL because redirects can cross trust boundaries.
+        final_decision = self.policy.check_navigation(page.url)
+        if not final_decision.allowed:
+            await page.go_back(wait_until="domcontentloaded")
+            raise PermissionError(f"browser redirect blocked: {final_decision.reason}")
         return await self.snapshot()
 
     async def snapshot(self, max_text: int = 20_000) -> BrowserSnapshot:
@@ -146,7 +153,7 @@ class PlaywrightBrowser:
 
     async def download(self, selector: str, *, filename: str | None = None) -> dict[str, str]:
         page = self._require_page()
-        async with page.expect_download() as pending:
+        async with page.expect_download(timeout=30_000) as pending:
             await page.locator(selector).first.click()
         download = await pending.value
         suggested = filename or download.suggested_filename
@@ -156,10 +163,13 @@ class PlaywrightBrowser:
 
     async def reload(self) -> BrowserSnapshot:
         page = self._require_page()
-        await page.reload(wait_until="domcontentloaded")
+        await page.reload(wait_until="domcontentloaded", timeout=30_000)
         return await self.snapshot()
 
     async def back(self) -> BrowserSnapshot:
         page = self._require_page()
-        await page.go_back(wait_until="domcontentloaded")
+        await page.go_back(wait_until="domcontentloaded", timeout=30_000)
+        final_decision = self.policy.check_navigation(page.url)
+        if not final_decision.allowed:
+            raise PermissionError(f"browser history target blocked: {final_decision.reason}")
         return await self.snapshot()
