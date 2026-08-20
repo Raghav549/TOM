@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import os
 import tempfile
 from dataclasses import dataclass
@@ -73,7 +72,7 @@ class ProductionReadiness:
         base_url = os.getenv("TOM_LLM_BASE_URL", "").rstrip("/")
         key = os.getenv("TOM_LLM_API_KEY", "").strip()
         headers = {"Authorization": f"Bearer {key}"} if key else {}
-        payload = {
+        request_payload = {
             "model": os.getenv("TOM_LLM_MODEL", "Qwen/Qwen3-8B"),
             "messages": [{"role": "user", "content": "Reply exactly TOM_READY"}],
             "stream": True,
@@ -81,7 +80,7 @@ class ProductionReadiness:
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=payload) as response:
+                async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=request_payload) as response:
                     response.raise_for_status()
                     saw_delta = False
                     saw_done = False
@@ -102,10 +101,8 @@ class ProductionReadiness:
                             delta = (choices[0] or {}).get("delta") or {}
                             if isinstance(delta.get("content"), str) and delta.get("content"):
                                 saw_delta = True
-                    if not saw_delta:
-                        raise RuntimeError("Qwen endpoint returned no content delta")
-                    if not saw_done:
-                        raise RuntimeError("Qwen endpoint did not terminate with [DONE]")
+                    if not saw_delta or not saw_done:
+                        raise RuntimeError("Qwen endpoint did not return a complete SSE response")
             checks["model"] = CapabilityCheck("model", True, "Qwen/ModelScope SSE chat completion verified")
         except Exception as exc:  # noqa: BLE001
             checks["model"] = CapabilityCheck("model", False, f"Qwen LLM endpoint unavailable: {type(exc).__name__}")
@@ -113,13 +110,11 @@ class ProductionReadiness:
     async def _probe_tts(self, checks: dict[str, CapabilityCheck]) -> None:
         if not checks["tts"].configured:
             return
-        # Remote TTS health is preferred when explicitly configured; otherwise
-        # the local Qwen3 adapter is the authoritative runtime and health is
-        # checked by loading the real checkpoint in the same process.
         url = os.getenv("TOM_QWEN3_TTS_STREAM_URL", "").strip()
         try:
             if url:
-                health_url = url.removesuffix("/stream") + "/health"
+                base = url.removesuffix("/stream").removesuffix("/stream/")
+                health_url = base + "/health"
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(health_url, headers=_tts_headers())
                     response.raise_for_status()
