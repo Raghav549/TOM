@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import secrets
 import struct
 from collections.abc import Iterator
 from dataclasses import replace
@@ -53,6 +55,24 @@ def _stream(chunks: list[Any], adapter: Qwen3TTSStreamingAdapter) -> Iterator[by
     yield _frame(adapter.FRAME_END)
 
 
+def _auth_required() -> bool:
+    return os.getenv("TOM_ENV", "development").strip().lower() == "production"
+
+
+def _auth_token() -> str:
+    return os.getenv("TOM_QWEN3_TTS_AUTH_TOKEN", "").strip()
+
+
+def _authorize(access_token: str | None) -> None:
+    expected = _auth_token()
+    if not _auth_required():
+        return
+    if not expected:
+        raise HTTPException(status_code=503, detail="Qwen3-TTS public API auth is not configured")
+    if not access_token or not secrets.compare_digest(access_token, expected):
+        raise HTTPException(status_code=401, detail="invalid Qwen3-TTS access token")
+
+
 def _generate(request: Qwen3TTSRequest, adapter: Qwen3TTSStreamingAdapter) -> list[Any]:
     style = VoiceStyle(prosody_plan={"temperature": request.temperature, "top_p": request.top_p})
     if request.instruct.strip():
@@ -64,8 +84,8 @@ def _generate(request: Qwen3TTSRequest, adapter: Qwen3TTSStreamingAdapter) -> li
     return chunks
 
 
-@router.post("/stream")
-async def stream_qwen3(request: Qwen3TTSRequest) -> StreamingResponse:
+async def _stream_qwen3(request: Qwen3TTSRequest, access_token: str | None = None) -> StreamingResponse:
+    _authorize(access_token)
     if request.language.casefold() not in {"en", "english"}:
         raise HTTPException(status_code=422, detail="Qwen3-TTS production endpoint currently supports English only")
     if request.model and request.model != Qwen3VoiceConfig().model_id:
@@ -92,8 +112,29 @@ async def stream_qwen3(request: Qwen3TTSRequest) -> StreamingResponse:
     )
 
 
+@router.post("/stream")
+async def stream_qwen3(request: Qwen3TTSRequest) -> StreamingResponse:
+    return await _stream_qwen3(request)
+
+
+@router.post("/stream/{access_token}")
+async def stream_qwen3_authenticated(request: Qwen3TTSRequest, access_token: str) -> StreamingResponse:
+    """Bearer-by-path variant used by free temporary tunnel deployments.
+
+    A named production tunnel should prefer a normal Authorization header at
+    the edge. The tokenized route exists so the zero-cost Kaggle + TryCloudflare
+    deployment can be reached without exposing the TTS endpoint anonymously.
+    """
+    return await _stream_qwen3(request, access_token)
+
+
 @router.get("/health")
 async def qwen3_health() -> dict[str, str]:
+    if _auth_required() and not _auth_token():
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "AUTH_NOT_CONFIGURED", "detail": "set TOM_QWEN3_TTS_AUTH_TOKEN for public production TTS"},
+        )
     adapter = _adapter_for_service()
     try:
         adapter._load()
@@ -110,4 +151,12 @@ async def qwen3_health() -> dict[str, str]:
         raise HTTPException(status_code=503, detail={"status": code, "detail": detail}) from exc
     except Exception as exc:  # noqa: BLE001 - readiness must expose model failure
         raise HTTPException(status_code=503, detail={"status": "MODEL_LOAD_ERROR", "detail": str(exc)}) from exc
-    return {"status": "READY", "model": adapter.config.model_id, "model_dir": adapter.config.model_dir, "audio_format": "pcm_s16le", "sample_rate": str(adapter.SAMPLE_RATE), "channels": "1"}
+    return {
+        "status": "READY",
+        "model": adapter.config.model_id,
+        "model_dir": adapter.config.model_dir,
+        "audio_format": "pcm_s16le",
+        "sample_rate": str(adapter.SAMPLE_RATE),
+        "channels": "1",
+        "public_auth": "required" if _auth_required() else "disabled",
+    }
