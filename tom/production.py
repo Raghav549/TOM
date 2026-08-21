@@ -6,6 +6,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -113,11 +114,13 @@ class ProductionReadiness:
         url = os.getenv("TOM_QWEN3_TTS_STREAM_URL", "").strip()
         try:
             if url:
-                base = url.removesuffix("/stream").removesuffix("/stream/")
-                health_url = base + "/health"
+                health_url = _qwen3_health_url(url)
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(health_url, headers=_tts_headers())
                     response.raise_for_status()
+                    payload = response.json()
+                if not isinstance(payload, dict) or payload.get("status") != "READY":
+                    raise RuntimeError("Qwen3-TTS health endpoint did not report READY")
                 checks["tts"] = CapabilityCheck("tts", True, "Qwen3-TTS streaming service is reachable and model-loaded")
                 return
             from tom.voice.qwen3_tts_stream import Qwen3TTSStreamingAdapter
@@ -164,6 +167,19 @@ class ProductionReadiness:
             checks["persistent_data"] = CapabilityCheck("persistent_data", True, f"data directory is writable: {data_dir}")
         except OSError as exc:
             checks["persistent_data"] = CapabilityCheck("persistent_data", False, f"data directory is not writable: {type(exc).__name__}")
+
+
+def _qwen3_health_url(stream_url: str) -> str:
+    """Map either /stream or /stream/<token> to the authoritative /health URL."""
+    parsed = urlsplit(stream_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("TOM_QWEN3_TTS_STREAM_URL must be an absolute http(s) URL")
+    marker = "/v1/tts/qwen3/stream"
+    index = parsed.path.find(marker)
+    if index < 0:
+        raise ValueError("TOM_QWEN3_TTS_STREAM_URL must contain /v1/tts/qwen3/stream")
+    base_path = parsed.path[:index]
+    return f"{parsed.scheme}://{parsed.netloc}{base_path}/v1/tts/qwen3/health"
 
 
 def _tts_headers() -> dict[str, str]:
