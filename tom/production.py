@@ -16,24 +16,49 @@ class CapabilityCheck:
     name: str
     configured: bool
     detail: str
+    required: bool = False
 
 
 class ProductionReadiness:
-    """Truthful production-readiness report; unreachable dependencies stay red.
+    """Truthful production-readiness report with infrastructure and capability separation.
 
-    Infrastructure readiness is intentionally separate from live device availability.
-    A configured device-authentication layer is required for production, but an Android
-    device does not need to be connected at process startup. Live device connectivity is
-    reported as operational status and must not block server boot or readiness.
+    ``ready`` answers whether the deployed server is healthy enough to serve traffic.
+    Optional TOM capabilities remain visible as degraded/unavailable without making the
+    whole web process unready. Live Android connectivity is operational state only.
+
+    Required checks are configurable through TOM_REQUIRED_CAPABILITIES, for example:
+    ``device_auth,persistent_data,model``. The safe default is infrastructure only.
     """
+
+    DEFAULT_REQUIRED = frozenset({"device_auth", "persistent_data"})
 
     def __init__(self) -> None:
         self.environment = os.getenv("TOM_ENV", "development")
 
+    def _required_names(self) -> set[str]:
+        raw = os.getenv("TOM_REQUIRED_CAPABILITIES", "").strip()
+        if not raw:
+            return set(self.DEFAULT_REQUIRED)
+        return {item.strip() for item in raw.split(",") if item.strip()}
+
     def checks(self) -> list[CapabilityCheck]:
-        llm = bool(os.getenv("TOM_LLM_ENABLED", "false").lower() == "true" and os.getenv("TOM_LLM_MODEL", "").strip())
+        required = self._required_names()
+        llm_enabled = os.getenv("TOM_LLM_ENABLED", "true").lower() == "true"
+        llm = bool(
+            not llm_enabled
+            or (
+                os.getenv("TOM_LLM_BASE_URL", "https://api-inference.modelscope.cn/v1").strip()
+                and os.getenv("TOM_LLM_MODEL", "Qwen/Qwen3-8B").strip()
+                and os.getenv("TOM_LLM_API_KEY", "").strip()
+            )
+        )
         tts_engine = os.getenv("TOM_TTS_ENGINE", "qwen3").strip().lower()
-        tts = tts_engine in {"qwen3", "qwen3-tts", "qwen"} and bool(os.getenv("TOM_QWEN3_TTS_MODEL", "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice").strip())
+        tts_enabled = tts_engine in {"qwen3", "qwen3-tts", "qwen"}
+        tts = bool(
+            not tts_enabled
+            or os.getenv("TOM_QWEN3_TTS_STREAM_URL", "").strip()
+            or os.getenv("TOM_QWEN3_TTS_MODEL_DIR", "").strip()
+        )
         asr = bool(os.getenv("TOM_ASR_MODEL", "").strip())
         vad = os.getenv("TOM_NEURAL_VAD", "true").lower() not in {"0", "false", "no"}
         turn = bool(os.getenv("TOM_TURN_MODEL_PATH", "").strip())
@@ -41,17 +66,19 @@ class ProductionReadiness:
         browser = _module_available("playwright")
         device_secret = bool(os.getenv("TOM_DEVICE_SECRETS_JSON", "").strip())
         data_dir = Path(os.getenv("TOM_DATA_DIR", ".tom-data"))
-        return [
-            CapabilityCheck("model", llm, "Qwen/ModelScope LLM configured" if llm else "configure TOM_LLM_ENABLED/TOM_LLM_MODEL"),
-            CapabilityCheck("tts", tts, "Qwen3-TTS configured" if tts else "configure TOM_TTS_ENGINE=qwen3 and TOM_QWEN3_TTS_MODEL"),
-            CapabilityCheck("asr", asr, "ASR model selected" if asr else "configure TOM_ASR_MODEL"),
-            CapabilityCheck("neural_vad", vad, "neural VAD enabled" if vad else "neural VAD disabled"),
-            CapabilityCheck("learned_turn", turn, "ONNX turn model configured" if turn else "TOM_TURN_MODEL_PATH not configured"),
-            CapabilityCheck("vision", vision, "vision provider configured" if vision else "configure TOM_VISION_BASE_URL/TOM_VISION_MODEL"),
-            CapabilityCheck("browser", browser, "Playwright installed" if browser else "install the browser extra"),
-            CapabilityCheck("device_auth", device_secret, "device secret store configured" if device_secret else "configure secure device secrets"),
-            CapabilityCheck("persistent_data", True, f"data directory: {data_dir}"),
+
+        items = [
+            CapabilityCheck("model", llm, "LLM disabled" if not llm_enabled else ("LLM endpoint configured" if llm else "configure TOM_LLM_BASE_URL/TOM_LLM_API_KEY/TOM_LLM_MODEL"), "model" in required),
+            CapabilityCheck("tts", tts, "TTS disabled" if not tts_enabled else ("Qwen3-TTS endpoint or local model configured" if tts else "configure TOM_QWEN3_TTS_STREAM_URL or local model directory"), "tts" in required),
+            CapabilityCheck("asr", asr, "ASR model selected" if asr else "ASR not configured", "asr" in required),
+            CapabilityCheck("neural_vad", vad, "neural VAD enabled" if vad else "neural VAD disabled", "neural_vad" in required),
+            CapabilityCheck("learned_turn", turn, "ONNX turn model configured" if turn else "TOM_TURN_MODEL_PATH not configured", "learned_turn" in required),
+            CapabilityCheck("vision", vision, "vision provider configured" if vision else "vision provider not configured", "vision" in required),
+            CapabilityCheck("browser", browser, "Playwright installed" if browser else "browser capability unavailable", "browser" in required),
+            CapabilityCheck("device_auth", device_secret, "device secret store configured" if device_secret else "configure secure device secrets", "device_auth" in required),
+            CapabilityCheck("persistent_data", True, f"data directory: {data_dir}", "persistent_data" in required),
         ]
+        return items
 
     async def probe(self, *, browser: Any = None, device_sessions: Any = None) -> dict[str, object]:
         checks = {item.name: item for item in self.checks()}
@@ -66,25 +93,28 @@ class ProductionReadiness:
             "device_connected",
             connected,
             "authenticated Android device connected" if connected else "no authenticated Android device currently connected",
+            False,
         )
 
-        # Live device presence is operational state, not a server boot dependency.
-        critical_checks = [item for name, item in checks.items() if name != "device_connected"]
-        ready = all(item.configured for item in critical_checks)
+        required_checks = [item for item in checks.values() if item.required]
+        failed_required = [item.name for item in required_checks if not item.configured]
+        degraded = [item.name for item in checks.values() if not item.required and item.name != "device_connected" and not item.configured]
+        ready = not failed_required
         return {
             "environment": self.environment,
             "ready": ready,
-            "operational": {
-                "device_connected": connected,
-            },
+            "required_capabilities": [item.name for item in required_checks],
+            "failed_required_capabilities": failed_required,
+            "degraded_capabilities": degraded,
+            "operational": {"device_connected": connected},
             "checks": [item.__dict__ for item in checks.values()],
-            "policy": "Readiness requires configured and reachable server dependencies; live Android device connectivity is reported separately as operational status.",
+            "policy": "Readiness is based only on configured required server dependencies. Optional capabilities and live Android connectivity are reported separately and do not block server readiness unless explicitly listed in TOM_REQUIRED_CAPABILITIES.",
         }
 
     async def _probe_llm(self, checks: dict[str, CapabilityCheck]) -> None:
-        if not checks["model"].configured:
+        if not checks["model"].configured or os.getenv("TOM_LLM_ENABLED", "true").lower() != "true":
             return
-        base_url = os.getenv("TOM_LLM_BASE_URL", "").rstrip("/")
+        base_url = os.getenv("TOM_LLM_BASE_URL", "https://api-inference.modelscope.cn/v1").rstrip("/")
         key = os.getenv("TOM_LLM_API_KEY", "").strip()
         headers = {"Authorization": f"Bearer {key}"} if key else {}
         request_payload = {
@@ -118,14 +148,16 @@ class ProductionReadiness:
                                 saw_delta = True
                     if not saw_delta or not saw_done:
                         raise RuntimeError("Qwen endpoint did not return a complete SSE response")
-            checks["model"] = CapabilityCheck("model", True, "Qwen/ModelScope SSE chat completion verified")
+            checks["model"] = _replace_check(checks["model"], True, "Qwen/ModelScope SSE chat completion verified")
         except Exception as exc:  # noqa: BLE001
-            checks["model"] = CapabilityCheck("model", False, f"Qwen LLM endpoint unavailable: {type(exc).__name__}")
+            checks["model"] = _replace_check(checks["model"], False, f"Qwen LLM endpoint unavailable: {type(exc).__name__}")
 
     async def _probe_tts(self, checks: dict[str, CapabilityCheck]) -> None:
         if not checks["tts"].configured:
             return
         url = os.getenv("TOM_QWEN3_TTS_STREAM_URL", "").strip()
+        if not url and os.getenv("TOM_TTS_ENGINE", "qwen3").strip().lower() not in {"qwen3", "qwen3-tts", "qwen"}:
+            return
         try:
             if url:
                 health_url = _qwen3_health_url(url)
@@ -135,32 +167,32 @@ class ProductionReadiness:
                     payload = response.json()
                 if not isinstance(payload, dict) or payload.get("status") != "READY":
                     raise RuntimeError("Qwen3-TTS health endpoint did not report READY")
-                checks["tts"] = CapabilityCheck("tts", True, "Qwen3-TTS streaming service is reachable and model-loaded")
+                checks["tts"] = _replace_check(checks["tts"], True, "Qwen3-TTS streaming service is reachable and model-loaded")
                 return
             from tom.voice.qwen3_tts_stream import Qwen3TTSStreamingAdapter
             await asyncio.to_thread(Qwen3TTSStreamingAdapter()._load)
-            checks["tts"] = CapabilityCheck("tts", True, "local Qwen3-TTS checkpoint loaded")
+            checks["tts"] = _replace_check(checks["tts"], True, "local Qwen3-TTS checkpoint loaded")
         except Exception as exc:  # noqa: BLE001
-            checks["tts"] = CapabilityCheck("tts", False, f"Qwen3-TTS unavailable: {type(exc).__name__}: {str(exc)[:180]}")
+            checks["tts"] = _replace_check(checks["tts"], False, f"Qwen3-TTS unavailable: {type(exc).__name__}: {str(exc)[:180]}")
 
     async def _probe_local_models(self, checks: dict[str, CapabilityCheck]) -> None:
         if checks["asr"].configured:
             try:
                 from tom.voice.streaming_asr import StreamingFasterWhisper
                 await asyncio.to_thread(StreamingFasterWhisper()._load)
-                checks["asr"] = CapabilityCheck("asr", True, "faster-whisper model loaded")
+                checks["asr"] = _replace_check(checks["asr"], True, "faster-whisper model loaded")
             except Exception as exc:  # noqa: BLE001
-                checks["asr"] = CapabilityCheck("asr", False, f"ASR model unavailable: {type(exc).__name__}")
+                checks["asr"] = _replace_check(checks["asr"], False, f"ASR model unavailable: {type(exc).__name__}")
         if checks["neural_vad"].configured:
             try:
                 from tom.voice.neural_vad import SileroStreamingVAD
                 await asyncio.to_thread(SileroStreamingVAD()._load)
-                checks["neural_vad"] = CapabilityCheck("neural_vad", True, "Silero VAD model loaded")
+                checks["neural_vad"] = _replace_check(checks["neural_vad"], True, "Silero VAD model loaded")
             except Exception as exc:  # noqa: BLE001
-                checks["neural_vad"] = CapabilityCheck("neural_vad", False, f"VAD model unavailable: {type(exc).__name__}")
+                checks["neural_vad"] = _replace_check(checks["neural_vad"], False, f"VAD model unavailable: {type(exc).__name__}")
         if checks["learned_turn"].configured:
             path = Path(os.getenv("TOM_TURN_MODEL_PATH", ""))
-            checks["learned_turn"] = CapabilityCheck("learned_turn", path.is_file(), "turn model file exists" if path.is_file() else "turn model file does not exist")
+            checks["learned_turn"] = _replace_check(checks["learned_turn"], path.is_file(), "turn model file exists" if path.is_file() else "turn model file does not exist")
 
     async def _probe_browser(self, checks: dict[str, CapabilityCheck], browser: Any) -> None:
         if not checks["browser"].configured or browser is None:
@@ -168,9 +200,9 @@ class ProductionReadiness:
         try:
             await browser.start()
             await browser.close()
-            checks["browser"] = CapabilityCheck("browser", True, "Playwright browser launched and closed")
+            checks["browser"] = _replace_check(checks["browser"], True, "Playwright browser launched and closed")
         except Exception as exc:  # noqa: BLE001
-            checks["browser"] = CapabilityCheck("browser", False, f"Playwright launch failed: {type(exc).__name__}")
+            checks["browser"] = _replace_check(checks["browser"], False, f"Playwright launch failed: {type(exc).__name__}")
 
     def _probe_persistence(self, checks: dict[str, CapabilityCheck]) -> None:
         data_dir = Path(os.getenv("TOM_DATA_DIR", ".tom-data"))
@@ -178,9 +210,13 @@ class ProductionReadiness:
             data_dir.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(dir=data_dir, prefix=".readiness-", delete=True):
                 pass
-            checks["persistent_data"] = CapabilityCheck("persistent_data", True, f"data directory is writable: {data_dir}")
+            checks["persistent_data"] = _replace_check(checks["persistent_data"], True, f"data directory is writable: {data_dir}")
         except OSError as exc:
-            checks["persistent_data"] = CapabilityCheck("persistent_data", False, f"data directory is not writable: {type(exc).__name__}")
+            checks["persistent_data"] = _replace_check(checks["persistent_data"], False, f"data directory is not writable: {type(exc).__name__}")
+
+
+def _replace_check(item: CapabilityCheck, configured: bool, detail: str) -> CapabilityCheck:
+    return CapabilityCheck(item.name, configured, detail, item.required)
 
 
 def _qwen3_health_url(stream_url: str) -> str:
