@@ -242,7 +242,8 @@ async def google_callback(code: str | None = None, state: str | None = None, err
     web_origin = html.escape(os.getenv("TOM_WEB_ORIGIN", "http://localhost"), quote=True)
     payload = html.escape(str(result.get("scope", "")), quote=True)
     return HTMLResponse(
-        "<!doctype html><html><body><h2>TOM Google Connected</h2><p>TOM securely stored the OAuth credentials.</p>"
+        "<!doctype html><html><head><meta charset='utf-8'><title>TOM Google Connected</title></head>"
+        "<body><h2>Google connected</h2><p>TOM securely stored the OAuth credentials.</p>"
         f"<script>if(window.opener){{window.opener.postMessage({{type:'tom-google-connected',scopes:'{payload}'}},'{web_origin}');window.close();}}</script>"
         "</body></html>"
     )
@@ -273,7 +274,7 @@ async def provision_credentials(request: CredentialProvisionRequest) -> dict[str
         credentials.set(request.provider, {key: str(value).strip() for key, value in request.credentials.items()})
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"provider": provider, "configured": True, "fields": sorted(request.credentials)}
+    return {"provider": request.provider, "configured": True, "fields": sorted(request.credentials)}
 
 
 @app.delete("/v1/credentials/{provider}", dependencies=[Depends(require_credential_provisioner)])
