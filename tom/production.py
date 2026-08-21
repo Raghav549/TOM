@@ -19,7 +19,13 @@ class CapabilityCheck:
 
 
 class ProductionReadiness:
-    """Truthful production-readiness report; unreachable dependencies stay red."""
+    """Truthful production-readiness report; unreachable dependencies stay red.
+
+    Infrastructure readiness is intentionally separate from live device availability.
+    A configured device-authentication layer is required for production, but an Android
+    device does not need to be connected at process startup. Live device connectivity is
+    reported as operational status and must not block server boot or readiness.
+    """
 
     def __init__(self) -> None:
         self.environment = os.getenv("TOM_ENV", "development")
@@ -54,17 +60,25 @@ class ProductionReadiness:
         await self._probe_local_models(checks)
         await self._probe_browser(checks, browser)
         self._probe_persistence(checks)
-        if self.environment.lower() == "production":
-            connected = bool(device_sessions)
-            checks["device_auth"] = CapabilityCheck(
-                "device_auth", connected,
-                "authenticated Android device connected" if connected else "no authenticated Android device connected",
-            )
+
+        connected = bool(device_sessions)
+        checks["device_connected"] = CapabilityCheck(
+            "device_connected",
+            connected,
+            "authenticated Android device connected" if connected else "no authenticated Android device currently connected",
+        )
+
+        # Live device presence is operational state, not a server boot dependency.
+        critical_checks = [item for name, item in checks.items() if name != "device_connected"]
+        ready = all(item.configured for item in critical_checks)
         return {
             "environment": self.environment,
-            "ready": all(item.configured for item in checks.values()),
+            "ready": ready,
+            "operational": {
+                "device_connected": connected,
+            },
             "checks": [item.__dict__ for item in checks.values()],
-            "policy": "Readiness requires configured and reachable dependencies; unavailable capabilities fail closed.",
+            "policy": "Readiness requires configured and reachable server dependencies; live Android device connectivity is reported separately as operational status.",
         }
 
     async def _probe_llm(self, checks: dict[str, CapabilityCheck]) -> None:
