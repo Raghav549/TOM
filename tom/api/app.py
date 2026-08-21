@@ -129,13 +129,19 @@ app.state.tom_voice_engine = voice_engine
 
 
 @app.on_event("startup")
-async def validate_production_startup() -> None:
-    if settings.environment.strip().lower() != "production":
-        return
-    report = await readiness.probe(browser=browser_runtime, device_sessions=android_bridge.sessions)
-    if not report["ready"]:
-        failed = ", ".join(str(item["name"]) for item in report["checks"] if not item["configured"])
-        raise RuntimeError(f"TOM production startup blocked; unavailable capabilities: {failed}")
+async def initialize_production_startup() -> None:
+    """Keep process liveness independent from slow or remote capability probes.
+
+    Render must be able to start and serve /health even when an Android device is
+    offline or a remote model service is temporarily unavailable. Full production
+    dependency verification remains available through /ready and
+    /v1/production/readiness, where failures stay truthful instead of crashing the
+    web process during boot.
+    """
+    app.state.tom_startup_readiness = {
+        "environment": settings.environment,
+        "mode": "deferred_readiness_probe",
+    }
 
 
 class ProfileUpdate(BaseModel):
@@ -236,8 +242,7 @@ async def google_callback(code: str | None = None, state: str | None = None, err
     web_origin = html.escape(os.getenv("TOM_WEB_ORIGIN", "http://localhost"), quote=True)
     payload = html.escape(str(result.get("scope", "")), quote=True)
     return HTMLResponse(
-        "<!doctype html><html><head><meta charset='utf-8'><title>TOM Google Connected</title></head>"
-        "<body><h2>Google connected</h2><p>TOM securely stored the OAuth credentials.</p>"
+        "<!doctype html><html><body><h2>TOM Google Connected</h2><p>TOM securely stored the OAuth credentials.</p>"
         f"<script>if(window.opener){{window.opener.postMessage({{type:'tom-google-connected',scopes:'{payload}'}},'{web_origin}');window.close();}}</script>"
         "</body></html>"
     )
@@ -268,7 +273,7 @@ async def provision_credentials(request: CredentialProvisionRequest) -> dict[str
         credentials.set(request.provider, {key: str(value).strip() for key, value in request.credentials.items()})
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"provider": request.provider, "configured": True, "fields": sorted(request.credentials)}
+    return {"provider": provider, "configured": True, "fields": sorted(request.credentials)}
 
 
 @app.delete("/v1/credentials/{provider}", dependencies=[Depends(require_credential_provisioner)])
