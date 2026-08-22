@@ -33,13 +33,7 @@ class VoiceSession:
         signals = signals or ConversationSignals(user_text=text)
         language = self.director.detect_language(text)
         style = self.director.direct(signals)
-        plan = self.planner.plan(
-            text,
-            emotion=style.emotion.value,
-            intensity=style.intensity,
-            speaking_rate=style.speaking_rate,
-            warmth=style.warmth,
-        )
+        plan = self.planner.plan(text, emotion=style.emotion.value, intensity=style.intensity, speaking_rate=style.speaking_rate, warmth=style.warmth)
         style = style.model_copy(update={"prosody_plan": {
             "cues": [cue.__dict__ for cue in plan.cues],
             "pitch_curve": list(plan.pitch_curve),
@@ -49,13 +43,7 @@ class VoiceSession:
             "character": signals.character_name,
             "character_style": signals.character_style,
             "character_traits": list(signals.character_traits),
-            # Keep a stable named voice by default. VoiceDesign is deliberately
-            # opt-in because recreating the character on every turn can change
-            # timbre and is substantially heavier than CustomVoice.
-            "voice_design": (
-                bool(signals.character_traits)
-                and signals.character_style not in {"friendly", "sigma", "default", "friendly+sigma"}
-            ),
+            "voice_design": bool(signals.character_traits) and signals.character_style not in {"friendly", "sigma", "default", "friendly+sigma"},
             "temperature": 0.62 if style.intensity < 0.65 else 0.68,
             "top_p": 0.90,
         }})
@@ -66,11 +54,9 @@ class VoiceSession:
         synthesize = getattr(self.engine, "synthesize", None)
         if callable(synthesize):
             return synthesize(turn.text, language=turn.language, voice=voice, style=turn.style)
-
         stream = getattr(self.engine, "stream", None)
         if not callable(stream):
-            raise RuntimeError("Configured TOM voice engine exposes neither synthesize() nor stream()")
-
+            raise TypeError("Configured TOM voice engine exposes neither synthesize() nor stream()")
         chunks = list(stream(turn.text, language=turn.language, voice=voice, style=turn.style))
         if not chunks:
             raise RuntimeError("TOM voice engine produced no audio")
