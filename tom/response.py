@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -43,10 +42,8 @@ class ModelResponder(Responder):
         messages = self._messages(user_message=user_message, events=events, context=context)
         try:
             return (await self.llm.complete(messages, temperature=0.7)).strip()
-        except Exception:
-            # Provider outages must remain visible through readiness/diagnostics,
-            # but a conversational session can still answer with the explicit
-            # deterministic fallback instead of becoming unusable.
+        except Exception as exc:  # noqa: BLE001
+            _ = exc
             return await self.fallback.respond(user_message=user_message, events=events, context=context)
 
     async def stream(self, *, user_message: str, events: list[dict[str, Any]], context: dict[str, Any]) -> AsyncIterator[str]:
@@ -58,8 +55,8 @@ class ModelResponder(Responder):
             if text:
                 yield text
                 return
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            _ = exc
         yield await self.fallback.respond(user_message=user_message, events=events, context=context)
 
 

@@ -76,3 +76,21 @@ async def test_explicit_required_capability_can_block_readiness(monkeypatch, tmp
 
     assert report["ready"] is False
     assert report["failed_required_capabilities"] == ["model"]
+
+
+@pytest.mark.asyncio
+async def test_browser_runtime_missing_is_truthful(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOM_ENV", "production")
+    monkeypatch.setenv("TOM_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TOM_DEVICE_SECRETS_JSON", '{"device":"secret"}')
+    monkeypatch.setenv("TOM_LLM_ENABLED", "false")
+    monkeypatch.setenv("TOM_TTS_ENGINE", "disabled")
+    monkeypatch.setenv("TOM_NEURAL_VAD", "false")
+    monkeypatch.delenv("TOM_REQUIRED_CAPABILITIES", raising=False)
+
+    readiness = ProductionReadiness()
+    report = await readiness.probe(browser=None, device_sessions=None)
+    browser = next(item for item in report["checks"] if item["name"] == "browser")
+    if browser["configured"] is False:
+        assert "browser" in report["degraded_capabilities"]
+        assert browser["detail"] in {"browser capability unavailable", "browser runtime was not initialized"}

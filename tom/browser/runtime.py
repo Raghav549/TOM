@@ -15,7 +15,7 @@ class BrowserSnapshot:
 
 
 class PlaywrightBrowser:
-    """Real visible browser runtime with guarded navigation and grounded actions."""
+    """Real browser runtime with guarded navigation and grounded actions."""
 
     def __init__(self, *, allowed_hosts: set[str] | None = None, headless: bool = False, download_dir: str = ".tom-data/downloads") -> None:
         self.policy = BrowserSafetyPolicy(allowed_hosts=allowed_hosts)
@@ -37,22 +37,34 @@ class PlaywrightBrowser:
             from playwright.async_api import async_playwright
         except ImportError as exc:
             raise RuntimeError("Install TOM browser support with the browser extra") from exc
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(headless=self.headless)
-        self.download_dir.mkdir(parents=True, exist_ok=True)
-        self._context = await self._browser.new_context(accept_downloads=True)
-        self._page = await self._context.new_page()
-        self._page.set_default_timeout(10_000)
-        self._page.set_default_navigation_timeout(30_000)
+        try:
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(
+                headless=self.headless,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            )
+            self.download_dir.mkdir(parents=True, exist_ok=True)
+            self._context = await self._browser.new_context(accept_downloads=True)
+            self._page = await self._context.new_page()
+            self._page.set_default_timeout(10_000)
+            self._page.set_default_navigation_timeout(30_000)
+        except Exception:
+            await self.close()
+            raise
 
     async def close(self) -> None:
-        if self._context is not None:
-            await self._context.close()
-        if self._browser is not None:
-            await self._browser.close()
-        if self._playwright is not None:
-            await self._playwright.stop()
+        context, browser, playwright = self._context, self._browser, self._playwright
         self._page = self._context = self._browser = self._playwright = None
+        if context is not None:
+            await context.close()
+        if browser is not None:
+            await browser.close()
+        if playwright is not None:
+            await playwright.stop()
 
     def _require_page(self) -> Any:
         if self._page is None:
@@ -65,7 +77,6 @@ class PlaywrightBrowser:
             raise PermissionError(f"browser navigation blocked: {decision.reason}")
         page = self._require_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-        # Re-check the final URL because redirects can cross trust boundaries.
         final_decision = self.policy.check_navigation(page.url)
         if not final_decision.allowed:
             await page.go_back(wait_until="domcontentloaded")
