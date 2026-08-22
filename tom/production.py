@@ -63,7 +63,6 @@ class ProductionReadiness:
         browser = _module_available("playwright")
         device_secret = bool(os.getenv("TOM_DEVICE_SECRETS_JSON", "").strip())
         data_dir = Path(os.getenv("TOM_DATA_DIR", ".tom-data"))
-
         return [
             CapabilityCheck("model", llm, "LLM disabled" if not llm_enabled else ("LLM endpoint configured; live probe pending" if llm else "configure TOM_LLM_BASE_URL/TOM_LLM_API_KEY/TOM_LLM_MODEL"), "model" in required),
             CapabilityCheck("tts", tts, "TTS disabled" if not tts_enabled else ("Qwen3-TTS endpoint or local model configured; live probe pending" if tts else "configure TOM_QWEN3_TTS_STREAM_URL or local model directory"), "tts" in required),
@@ -83,7 +82,6 @@ class ProductionReadiness:
         await self._probe_local_models(checks)
         await self._probe_browser(checks, browser)
         self._probe_persistence(checks)
-
         connected = bool(device_sessions)
         checks["device_connected"] = CapabilityCheck(
             "device_connected",
@@ -91,7 +89,6 @@ class ProductionReadiness:
             "authenticated Android device connected" if connected else "no authenticated Android device currently connected",
             False,
         )
-
         required_checks = [item for item in checks.values() if item.required]
         failed_required = [item.name for item in required_checks if not item.configured]
         degraded = [item.name for item in checks.values() if not item.required and item.name != "device_connected" and not item.configured]
@@ -119,30 +116,31 @@ class ProductionReadiness:
             "extra_body": {"enable_thinking": False},
         }
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                async with client.stream("POST", f"{base_url}/chat/completions", headers=headers, json=payload) as response:
-                    response.raise_for_status()
-                    saw_content = False
-                    saw_done = False
-                    async for line in response.aiter_lines():
-                        line = line.strip()
-                        if not line.startswith("data:"):
-                            continue
-                        data = line[5:].strip()
-                        if data == "[DONE]":
-                            saw_done = True
-                            break
-                        try:
-                            event = __import__("json").loads(data)
-                        except ValueError:
-                            continue
-                        choices = event.get("choices") or []
-                        if choices:
-                            delta = (choices[0] or {}).get("delta") or {}
-                            if isinstance(delta.get("content"), str) and delta.get("content"):
-                                saw_content = True
-                    if not saw_content or not saw_done:
-                        raise RuntimeError("provider did not return complete SSE content")
+            async with httpx.AsyncClient(timeout=15.0) as client, client.stream(
+                "POST", f"{base_url}/chat/completions", headers=headers, json=payload
+            ) as response:
+                response.raise_for_status()
+                saw_content = False
+                saw_done = False
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        saw_done = True
+                        break
+                    try:
+                        event = __import__("json").loads(data)
+                    except ValueError:
+                        continue
+                    choices = event.get("choices") or []
+                    if choices:
+                        delta = (choices[0] or {}).get("delta") or {}
+                        if isinstance(delta.get("content"), str) and delta.get("content"):
+                            saw_content = True
+                if not saw_content or not saw_done:
+                    raise RuntimeError("provider did not return complete SSE content")
             checks["model"] = _replace_check(checks["model"], True, "Qwen/ModelScope SSE chat completion verified")
         except httpx.HTTPStatusError as exc:
             checks["model"] = _replace_check(checks["model"], False, f"Qwen LLM endpoint returned HTTP {exc.response.status_code}")
@@ -209,8 +207,8 @@ class ProductionReadiness:
             checks["browser"] = _replace_check(checks["browser"], False, f"Playwright launch failed: {type(exc).__name__}{suffix}")
             try:
                 await browser.close()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as cleanup_exc:  # noqa: BLE001
+                _ = cleanup_exc
 
     def _probe_persistence(self, checks: dict[str, CapabilityCheck]) -> None:
         data_dir = Path(os.getenv("TOM_DATA_DIR", ".tom-data"))
