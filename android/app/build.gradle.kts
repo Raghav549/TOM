@@ -11,10 +11,12 @@ android {
         applicationId = "com.tom.device"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
-        buildConfigField("String", "TOM_VOICE_WS_URL", "\"${System.getenv("TOM_VOICE_WS_URL") ?: ""}\"")
-        buildConfigField("String", "TOM_BRIDGE_WS_URL", "\"${System.getenv("TOM_BRIDGE_WS_URL") ?: ""}\"")
+        versionCode = 4
+        versionName = "0.4.0"
+        val productionVoiceUrl = "wss://tom-core-api.onrender.com/v1/voice/ws"
+        val productionBridgeUrl = "wss://tom-core-api.onrender.com/v1/device/ws"
+        buildConfigField("String", "TOM_VOICE_WS_URL", "\"${System.getenv("TOM_VOICE_WS_URL") ?: productionVoiceUrl}\"")
+        buildConfigField("String", "TOM_BRIDGE_WS_URL", "\"${System.getenv("TOM_BRIDGE_WS_URL") ?: productionBridgeUrl}\"")
         buildConfigField("String", "TOM_DEVICE_ID", "\"${System.getenv("TOM_DEVICE_ID") ?: ""}\"")
     }
 

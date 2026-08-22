@@ -7,14 +7,19 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
+import android.speech.tts.TextToSpeech
 import android.os.Handler
 import android.os.Looper
 import okio.ByteString
 import org.json.JSONObject
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Real phone <-> TOM full-duplex voice bridge: 16 kHz PCM input and 24 kHz PCM output. */
+/** Real phone <-> TOM full-duplex voice bridge: 16 kHz PCM input and 24 kHz PCM output.
+ * If the remote TTS capability is unavailable, TOM still returns the real response text
+ * and Android speaks that response locally instead of silently failing the whole turn.
+ */
 class TomVoiceLoop(
     private val context: Context,
     private val endpoint: String,
@@ -31,6 +36,9 @@ class TomVoiceLoop(
     private var captureThread: Thread? = null
     private var echoCanceler: AcousticEchoCanceler? = null
     private val pcmPlayer = TomPcmPlayer(24_000)
+    private val responseAudioReceived = AtomicBoolean(false)
+    private val responseText = StringBuilder()
+    private val nativeTts: TextToSpeech = TextToSpeech(context.applicationContext) { }
     private var startedAtMs = 0L
     private var responseAudioStartMs = 0L
     private var firstAudioAtMs = 0L
@@ -60,6 +68,8 @@ class TomVoiceLoop(
         coreSocket?.close(1000, "client_stop")
         coreSocket = null
         pcmPlayer.stop()
+        nativeTts.stop()
+        nativeTts.shutdown()
         onState("stopped")
     }
 
@@ -96,6 +106,7 @@ class TomVoiceLoop(
 
                         override fun onMessage(webSocket: okhttp3.WebSocket, bytes: ByteString) {
                             if (!running.get() || bytes.size == 0) return
+                            responseAudioReceived.set(true)
                             if (firstAudioAtMs == 0L) {
                                 firstAudioAtMs = System.currentTimeMillis()
                                 val responseLatency = if (responseAudioStartMs > 0L) firstAudioAtMs - responseAudioStartMs else -1L
@@ -127,6 +138,19 @@ class TomVoiceLoop(
         }
     }
 
+    private fun speakFallbackIfNeeded() {
+        if (!running.get() || responseAudioReceived.get()) return
+        val text = responseText.toString().trim()
+        if (text.isBlank()) return
+        val language = if (text.any { it in '\u0900'..'\u097F' }) Locale("hi", "IN") else Locale.US
+        runCatching {
+            nativeTts.language = language
+            nativeTts.setSpeechRate(1.0f)
+            nativeTts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "tom-fallback-response")
+            onState("speaking • phone TTS fallback")
+        }.onFailure { onError("Phone TTS fallback failed: ${it.message}") }
+    }
+
     private fun handleServerEvent(raw: String) {
         val payload = runCatching { JSONObject(raw) }.getOrNull() ?: return
         when (payload.optString("type")) {
@@ -138,10 +162,20 @@ class TomVoiceLoop(
             "connected" -> onState("core_handshake")
             "partial_transcript" -> onTranscript(payload.optString("text"))
             "transcript" -> onTranscript(payload.optString("text"))
-            "response_partial" -> Unit
+            "response_partial" -> responseText.append(payload.optString("text"))
+            "response" -> {
+                val finalText = payload.optString("text")
+                if (finalText.isNotBlank()) {
+                    responseText.clear()
+                    responseText.append(finalText)
+                }
+                speakFallbackIfNeeded()
+            }
             "audio_start" -> {
                 responseAudioStartMs = System.currentTimeMillis()
                 firstAudioAtMs = 0L
+                responseAudioReceived.set(false)
+                responseText.clear()
                 pcmPlayer.start()
                 onState("speaking")
             }
@@ -151,6 +185,7 @@ class TomVoiceLoop(
             }
             "audio_end" -> {
                 pcmPlayer.stop()
+                speakFallbackIfNeeded()
                 onState("listening")
             }
             "state" -> onState("core • ${payload.optString("value")}")
@@ -158,7 +193,10 @@ class TomVoiceLoop(
                 val first = payload.optDouble("tts_first_audio_ms", -1.0)
                 if (first >= 0) onState("voice • first audio ${first.toInt()}ms")
             }
-            "error" -> onError("${payload.optString("stage", "voice")} • ${payload.optString("detail", "unknown error")}")
+            "error" -> {
+                speakFallbackIfNeeded()
+                onError("${payload.optString("stage", "voice")} • ${payload.optString("detail", "unknown error")}")
+            }
         }
     }
 
@@ -240,5 +278,4 @@ class TomVoiceLoop(
         runCatching { echoCanceler?.release() }
         echoCanceler = null
     }
-
 }

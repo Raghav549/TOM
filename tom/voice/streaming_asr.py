@@ -13,12 +13,16 @@ class PartialTranscript:
 
 
 class StreamingFasterWhisper:
-    """Incremental ASR over a rolling PCM window."""
+    """Incremental ASR over a rolling PCM window.
+
+    Defaults are deliberately CPU-safe for small production instances. A GPU
+    deployment can still override them through TOM_ASR_DEVICE/COMPUTE_TYPE.
+    """
 
     def __init__(self) -> None:
-        self.model_name = os.getenv("TOM_ASR_MODEL", "small")
-        self.device = os.getenv("TOM_ASR_DEVICE", "cuda")
-        self.compute_type = os.getenv("TOM_ASR_COMPUTE_TYPE", "float16")
+        self.model_name = os.getenv("TOM_ASR_MODEL", "base")
+        self.device = os.getenv("TOM_ASR_DEVICE", "cpu")
+        self.compute_type = os.getenv("TOM_ASR_COMPUTE_TYPE", "int8")
         self.partial_interval_ms = int(os.getenv("TOM_ASR_PARTIAL_INTERVAL_MS", "480"))
         self.context_ms = int(os.getenv("TOM_ASR_CONTEXT_MS", "3200"))
         self._model = None
@@ -53,7 +57,11 @@ class StreamingFasterWhisper:
             if text:
                 parts.append(text)
             confidence.append(max(0.0, min(1.0, float(segment.avg_logprob + 1.0))))
-        return PartialTranscript(" ".join(parts), sum(confidence) / len(confidence) if confidence else 0.0, getattr(info, "language", None))
+        return PartialTranscript(
+            " ".join(parts),
+            sum(confidence) / len(confidence) if confidence else 0.0,
+            getattr(info, "language", None),
+        )
 
     def reset(self) -> None:
         self._buffer.clear()
