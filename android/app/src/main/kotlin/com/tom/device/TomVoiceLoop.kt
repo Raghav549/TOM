@@ -16,10 +16,7 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Real phone <-> TOM full-duplex voice bridge: 16 kHz PCM input and 24 kHz PCM output.
- * If the remote TTS capability is unavailable, TOM still returns the real response text
- * and Android speaks that response locally instead of silently failing the whole turn.
- */
+/** Real phone <-> TOM full-duplex voice bridge: 16 kHz PCM input and 24 kHz PCM output. */
 class TomVoiceLoop(
     private val context: Context,
     private val endpoint: String,
@@ -39,9 +36,6 @@ class TomVoiceLoop(
     private val responseAudioReceived = AtomicBoolean(false)
     private val responseText = StringBuilder()
     private val nativeTts: TextToSpeech = TextToSpeech(context.applicationContext) { }
-    private var startedAtMs = 0L
-    private var responseAudioStartMs = 0L
-    private var firstAudioAtMs = 0L
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
@@ -50,12 +44,11 @@ class TomVoiceLoop(
             onError("Microphone permission is required")
             return
         }
-        if (endpoint.isBlank()) {
+        if (!endpoint.startsWith("wss://")) {
             running.set(false)
-            onError("TOM voice endpoint is not configured")
+            onError("Production voice endpoint must use WSS")
             return
         }
-        startedAtMs = System.currentTimeMillis()
         onState("voice_connecting")
         connectCore()
     }
@@ -69,16 +62,15 @@ class TomVoiceLoop(
         coreSocket = null
         pcmPlayer.stop()
         nativeTts.stop()
-        nativeTts.shutdown()
         onState("stopped")
     }
 
     private fun connectCore() {
         runCatching {
             coreSocket = okhttp3.OkHttpClient.Builder()
-                .connectTimeout(2500, TimeUnit.MILLISECONDS)
+                .connectTimeout(5000, TimeUnit.MILLISECONDS)
                 .readTimeout(0, TimeUnit.MILLISECONDS)
-                .writeTimeout(2500, TimeUnit.MILLISECONDS)
+                .writeTimeout(5000, TimeUnit.MILLISECONDS)
                 .pingInterval(20, TimeUnit.SECONDS)
                 .build()
                 .newWebSocket(
@@ -94,6 +86,7 @@ class TomVoiceLoop(
                                     .put("sample_rate", 16_000)
                                     .put("continuous_audio", true)
                                     .put("full_duplex", true)
+                                    .put("explicit_turn_control", true)
                                     .toString()
                             )
                             onState("core_connected")
@@ -107,21 +100,16 @@ class TomVoiceLoop(
                         override fun onMessage(webSocket: okhttp3.WebSocket, bytes: ByteString) {
                             if (!running.get() || bytes.size == 0) return
                             responseAudioReceived.set(true)
-                            if (firstAudioAtMs == 0L) {
-                                firstAudioAtMs = System.currentTimeMillis()
-                                val responseLatency = if (responseAudioStartMs > 0L) firstAudioAtMs - responseAudioStartMs else -1L
-                                onState(if (responseLatency >= 0) "speaking • first_audio=${responseLatency}ms" else "speaking")
-                            }
-                            runCatching { pcmPlayer.write(bytes.toByteArray(), 24_000) }
-                                .onFailure { onError("PCM playback failed: ${it.message}") }
+                            runCatching {
+                                if (!pcmPlayer.isPlaying()) pcmPlayer.start()
+                                pcmPlayer.write(bytes.toByteArray(), 24_000)
+                            }.onFailure { onError("PCM playback failed: ${it.message}") }
                         }
 
                         override fun onFailure(webSocket: okhttp3.WebSocket, t: Throwable, response: okhttp3.Response?) {
                             coreReady.set(false)
                             stopCapture()
-                            if (running.get()) {
-                                onError("Voice core connection failed: ${t.message ?: "unknown error"}")
-                            }
+                            if (running.get()) onError("Voice core connection failed: ${t.message ?: "unknown error"}")
                         }
 
                         override fun onClosing(webSocket: okhttp3.WebSocket, code: Int, reason: String) {
@@ -132,9 +120,7 @@ class TomVoiceLoop(
                 )
         }.onFailure {
             coreReady.set(false)
-            if (running.get()) {
-                onError("Voice core setup failed: ${it.message}")
-            }
+            if (running.get()) onError("Voice core setup failed: ${it.message}")
         }
     }
 
@@ -172,26 +158,21 @@ class TomVoiceLoop(
                 speakFallbackIfNeeded()
             }
             "audio_start" -> {
-                responseAudioStartMs = System.currentTimeMillis()
-                firstAudioAtMs = 0L
                 responseAudioReceived.set(false)
                 responseText.clear()
                 pcmPlayer.start()
                 onState("speaking")
             }
-            "audio_stop" -> {
+            "audio_stop", "audio_end" -> {
                 pcmPlayer.stop()
-                onState("listening")
-            }
-            "audio_end" -> {
-                pcmPlayer.stop()
-                speakFallbackIfNeeded()
+                if (payload.optString("type") == "audio_end") speakFallbackIfNeeded()
                 onState("listening")
             }
             "state" -> onState("core • ${payload.optString("value")}")
-            "latency" -> {
-                val first = payload.optDouble("tts_first_audio_ms", -1.0)
-                if (first >= 0) onState("voice • first audio ${first.toInt()}ms")
+            "audio_debug" -> {
+                val rms = payload.optDouble("rms", 0.0)
+                val vad = payload.optDouble("vad_probability", 0.0)
+                onState("mic • rms=${rms.toInt()} vad=${(vad * 100).toInt()}%")
             }
             "error" -> {
                 speakFallbackIfNeeded()
@@ -204,11 +185,7 @@ class TomVoiceLoop(
         if (!running.get() || !coreReady.get() || captureThread?.isAlive == true) return
         val sampleRate = 16_000
         val frameBytes = 640
-        val min = AudioRecord.getMinBufferSize(
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-        )
+        val min = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         if (min <= 0) {
             onError("Android microphone buffer unavailable")
             return
@@ -233,9 +210,7 @@ class TomVoiceLoop(
         }
         recorder = audioRecord
         echoCanceler = runCatching {
-            if (AcousticEchoCanceler.isAvailable()) {
-                AcousticEchoCanceler.create(audioRecord.audioSessionId)?.also { it.enabled = true }
-            } else null
+            if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(audioRecord.audioSessionId)?.also { it.enabled = true } else null
         }.getOrNull()
 
         captureThread = Thread {
@@ -245,6 +220,11 @@ class TomVoiceLoop(
                 return@Thread
             }
             onState("listening")
+            // Explicit turn control: start with a turn, stream audio, and end it
+            // after 250 ms of silence is detected locally. This avoids dependence
+            // on a server-side speech threshold for normal phone speech.
+            var silenceFrames = 0
+            var activeTurn = false
             while (running.get() && coreReady.get()) {
                 var filled = 0
                 while (filled < frame.size && running.get() && coreReady.get()) {
@@ -255,9 +235,33 @@ class TomVoiceLoop(
                     }
                     filled += n
                 }
-                if (filled == frame.size && coreSocket?.send(ByteString.of(*frame)) != true) {
-                    onError("Voice audio send failed")
-                    break
+                if (filled != frame.size) continue
+
+                var rms = 0.0
+                for (i in 0 until frame.size step 2) {
+                    val sample = (frame[i].toInt() and 0xff) or (frame[i + 1].toInt() shl 8)
+                    val signed = if (sample and 0x8000 != 0) sample - 65536 else sample
+                    rms += signed.toDouble() * signed.toDouble()
+                }
+                rms = kotlin.math.sqrt(rms / (frame.size / 2))
+                val voiceDetected = rms >= 160.0
+
+                if (!activeTurn && voiceDetected) {
+                    activeTurn = true
+                    silenceFrames = 0
+                    coreSocket?.send(JSONObject().put("type", "audio_start").toString())
+                }
+                if (activeTurn) {
+                    if (voiceDetected) silenceFrames = 0 else silenceFrames++
+                    if (coreSocket?.send(ByteString.of(*frame)) != true) {
+                        onError("Voice audio send failed")
+                        break
+                    }
+                    if (silenceFrames >= 13) { // ~260 ms at 20 ms frames
+                        coreSocket?.send(JSONObject().put("type", "audio_end").toString())
+                        activeTurn = false
+                        silenceFrames = 0
+                    }
                 }
             }
             runCatching { audioRecord.stop() }
