@@ -29,25 +29,27 @@ def _next_or_none(iterator):
         return None
 
 
-def _simple_vad(pcm: bytes, threshold: float = 650.0) -> tuple[float, bool]:
+def _simple_vad(pcm: bytes, threshold: float = 180.0) -> tuple[float, bool]:
     if not pcm:
         return 0.0, False
     try:
         import numpy as np
         audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
-        energy = float(np.sqrt(np.mean(audio * audio))) if audio.size else 0.0
-        probability = min(1.0, energy / 4000.0)
-        return probability, energy >= threshold
+        if audio.size == 0:
+            return 0.0, False
+        rms = float(np.sqrt(np.mean(audio * audio)))
+        probability = min(1.0, rms / 2000.0)
+        return probability, rms >= threshold
     except Exception:
         return 0.0, False
 
 
 class LiveVoiceConnection:
-    """Lightweight production voice transport.
+    """Production voice transport for Android 16 kHz PCM16 audio.
 
-    The Android client sends 16 kHz PCM16 frames. This server performs CPU-safe
-    endpoint detection, ASR, LLM response generation and remote/local Qwen TTS.
-    No Silero/ONNX dependency is required for the basic conversational path.
+    Uses a lightweight CPU-safe VAD on Render, then ASR -> LLM -> Qwen TTS.
+    The client can also explicitly delimit a turn with audio_start/audio_end,
+    so a conservative VAD never becomes a silent failure mode.
     """
 
     def __init__(self, websocket: WebSocket, runtime: AgentRuntime) -> None:
@@ -67,13 +69,16 @@ class LiveVoiceConnection:
         self.pre_roll = bytearray()
         self.pre_roll_max = 5120
         self.in_speech = False
+        self.explicit_turn = False
         self.silence_ms = 0
         self.speech_ms = 0
         self.last_partial_at_ms = 0
+        self.last_audio_log_ms = 0
+        self.last_vad_probability = 0.0
+        self.last_rms = 0.0
         self.tts_task: asyncio.Task | None = None
         self.turn_task: asyncio.Task | None = None
         self.pending_tts_text: str | None = None
-        self.pending_tts_index = 0
         self.tom_speaking = False
         self._latency = {}
 
@@ -122,6 +127,8 @@ class LiveVoiceConnection:
 
     async def process_turn(self, pcm: bytes) -> None:
         if len(pcm) < 6400:
+            await self.send_event("error", stage="asr", detail="audio_turn_too_short")
+            await self.send_event("state", value="listening")
             return
         await self.send_event("state", value="transcribing")
         self.asr.reset()
@@ -134,6 +141,7 @@ class LiveVoiceConnection:
             return
         text = final.text.strip()
         if not text:
+            await self.send_event("error", stage="asr", detail="no_speech_transcript")
             await self.send_event("state", value="listening")
             return
         await self.send_event("transcript", text=text, confidence=final.confidence, language=final.language, final=True)
@@ -171,6 +179,8 @@ class LiveVoiceConnection:
             await self.send_event("state", value="listening")
 
     async def _process_frame(self, pcm: bytes) -> None:
+        if not pcm:
+            return
         self.pre_roll.extend(pcm)
         if len(self.pre_roll) > self.pre_roll_max:
             del self.pre_roll[:-self.pre_roll_max]
@@ -178,8 +188,31 @@ class LiveVoiceConnection:
             state = await asyncio.to_thread(self.prosody.update, pcm, 16000)
         except Exception:
             state = self.prosody.state
-        probability, speech = _simple_vad(pcm)
+        probability, speech = _simple_vad(pcm, float(os.getenv("TOM_VAD_THRESHOLD", "180")))
+        self.last_vad_probability = probability
+        try:
+            import numpy as np
+            samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+            self.last_rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
+        except Exception:
+            self.last_rms = 0.0
         now_ms = int(time.time() * 1000)
+        if now_ms - self.last_audio_log_ms >= 2000:
+            self.last_audio_log_ms = now_ms
+            await self.send_event("audio_debug", rms=round(self.last_rms, 1), vad_probability=round(self.last_vad_probability, 3), speech=bool(speech), explicit_turn=self.explicit_turn)
+
+        if self.explicit_turn:
+            self.turn_audio.extend(pcm)
+            if now_ms - self.last_partial_at_ms >= 800:
+                self.last_partial_at_ms = now_ms
+                try:
+                    partial = await asyncio.to_thread(self.asr.push, pcm, 16000)
+                    if partial and partial.text.strip():
+                        await self.send_event("partial_transcript", text=partial.text, confidence=partial.confidence, language=partial.language)
+                except Exception as exc:
+                    await self.send_event("error", stage="partial_asr", detail=str(exc))
+            return
+
         if speech:
             if not self.in_speech:
                 self.in_speech = True
@@ -229,7 +262,7 @@ class LiveVoiceConnection:
                 if isinstance(traits, str):
                     traits = [traits]
                 self.character_traits = tuple(str(x).strip()[:48] for x in traits if str(x).strip())[:12]
-            await self.send_event("ready", protocol=4, conversation_id=self.conversation_id, sample_rate=24000, continuous_audio=True, neural_vad=False, lightweight_vad=True, full_duplex=True, tts_engine=os.getenv("TOM_TTS_ENGINE", "qwen3"))
+            await self.send_event("ready", protocol=4, conversation_id=self.conversation_id, sample_rate=24000, continuous_audio=True, neural_vad=False, lightweight_vad=True, explicit_turn_control=True, full_duplex=True, tts_engine=os.getenv("TOM_TTS_ENGINE", "qwen3"))
         elif event_type == "set_character":
             character = payload.get("character") or payload
             if isinstance(character, dict):
@@ -243,11 +276,14 @@ class LiveVoiceConnection:
         elif event_type == "audio_start":
             self.turn_audio.clear()
             self.in_speech = False
+            self.explicit_turn = True
             self.silence_ms = 0
             self.speech_ms = 0
+            self.last_partial_at_ms = 0
             self.asr.reset()
             await self.send_event("state", value="listening")
         elif event_type == "audio_end":
+            self.explicit_turn = False
             if self.turn_audio and (not self.turn_task or self.turn_task.done()):
                 turn = bytes(self.turn_audio)
                 self.turn_audio.clear()
