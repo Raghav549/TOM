@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from tom.action_policy import ActionPolicy, RiskLevel
-from tom.api_catalog import ApiCatalog
 from tom.agent_loop import AgentLoop
+from tom.api_catalog import ApiCatalog
 from tom.tool_registry import ToolRegistry, ToolSpec
 
 

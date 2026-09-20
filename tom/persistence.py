@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Mapping
-from uuid import UUID
+from collections.abc import Mapping
+from typing import Any
 
 import httpx
 

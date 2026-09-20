@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -109,6 +110,3 @@ class AndroidBridgeEventRouter:
 
         return await self.runtime.execute(plan, before, dispatch, observe, verify_expected, reground, ask_user)
 
-
-# asyncio is imported after the public classes to keep the event model easy to read.
-import asyncio

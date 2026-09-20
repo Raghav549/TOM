@@ -38,7 +38,7 @@ class DurableTaskPersistence:
         self._lock = Lock()
 
     @classmethod
-    def from_environment(cls) -> "DurableTaskPersistence":
+    def from_environment(cls) -> DurableTaskPersistence:
         store = None
         if os.getenv("TOM_SUPABASE_URL", "").strip() and os.getenv("TOM_SUPABASE_SERVICE_ROLE_KEY", "").strip():
             store = SupabaseTaskStore()

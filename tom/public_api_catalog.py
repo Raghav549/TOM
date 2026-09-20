@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Typed capability catalogue for external API adapters.
 
 The public-apis repository is a discovery directory, not an execution layer.
@@ -7,6 +5,8 @@ TOM executes typed adapters through the same AgentRuntime policy/approval path.
 Credentialed providers remain non-executable in the default catalogue until
 credentials are configured.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum

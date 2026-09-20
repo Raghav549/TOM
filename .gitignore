@@ -12,3 +12,22 @@ dist/
 *.egg-info/
 *.swp
 *.swo
+
+# Local audio scratch output (TTS smoke tests); never commit generated audio.
+*.wav
+*.mp3
+*.ogg
+
+# Android / Gradle build output
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

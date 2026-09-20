@@ -1,4 +1,8 @@
-from tom.notifications.intelligence import NotificationEvent, NotificationIntelligence, NotificationPriority
+from tom.notifications.intelligence import (
+    NotificationEvent,
+    NotificationIntelligence,
+    NotificationPriority,
+)
 
 
 def test_sensitive_notifications_never_auto_act() -> None:

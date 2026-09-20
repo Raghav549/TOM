@@ -51,5 +51,5 @@ class SemanticMemory:
         query_vec = np.asarray(model.encode(query, normalize_embeddings=True), dtype=np.float32)
         matrix = np.asarray(model.encode([self._text(item) for item in candidates], normalize_embeddings=True), dtype=np.float32)
         scores = matrix @ query_vec
-        ranked = sorted(zip(candidates, scores.tolist()), key=lambda pair: pair[1], reverse=True)
+        ranked = sorted(zip(candidates, scores.tolist(), strict=True), key=lambda pair: pair[1], reverse=True)
         return [SemanticHit(item, float(score)) for item, score in ranked[: max(1, min(limit, 50))]]

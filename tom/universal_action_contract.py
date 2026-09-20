@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """Single contract shared by planner, verifier, Android bridge and browser agent.
 
 The contract deliberately distinguishes transport acceptance from semantic success.
 Unsupported/protected surfaces become explicit capability states; TOM never claims
 success merely because a click/intent was accepted.
 """
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum

@@ -3,7 +3,13 @@ from pathlib import Path
 import pytest
 
 from tom.credentials import CredentialManager
-from tom.integration_tools import GoogleCalendarCreateTool, GmailSendTool, GooglePlacesSearchTool, TwilioSmsTool, register_integration_tools
+from tom.integration_tools import (
+    GmailSendTool,
+    GoogleCalendarCreateTool,
+    GooglePlacesSearchTool,
+    TwilioSmsTool,
+    register_integration_tools,
+)
 from tom.tools import ToolRegistry
 
 

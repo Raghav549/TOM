@@ -76,3 +76,20 @@ async def test_explicit_required_capability_can_block_readiness(monkeypatch, tmp
 
     assert report["ready"] is False
     assert report["failed_required_capabilities"] == ["model"]
+
+
+def test_report_is_synchronous_and_configuration_only(monkeypatch, tmp_path):
+    monkeypatch.setenv("TOM_ENV", "development")
+    monkeypatch.setenv("TOM_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("TOM_DEVICE_SECRETS_JSON", raising=False)
+    monkeypatch.delenv("TOM_REQUIRED_CAPABILITIES", raising=False)
+
+    report = ProductionReadiness().report()
+
+    assert report["environment"] == "development"
+    assert report["ready"] is False
+    assert "device_auth" in report["failed_required_capabilities"]
+    names = {item["name"] for item in report["checks"]}
+    assert {"model", "tts", "persistent_data", "device_connected"} <= names
+    persistent = next(item for item in report["checks"] if item["name"] == "persistent_data")
+    assert persistent["configured"] is True and "writable" in persistent["detail"]

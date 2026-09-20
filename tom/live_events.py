@@ -5,7 +5,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-
 TERMINAL_TYPES = {"task.completed", "task.failed", "TASK_COMPLETED", "TASK_FAILED"}
 
 
@@ -43,7 +42,7 @@ class LiveEvent:
 class LiveEventStream:
     """Single ordered source shared by Core, Android bridge, UI and voice."""
 
-    _default: "LiveEventStream | None" = None
+    _default: LiveEventStream | None = None
 
     def __init__(self, history_size: int = 512, *, make_default: bool = True) -> None:
         self.history_size = history_size
@@ -55,7 +54,7 @@ class LiveEventStream:
             LiveEventStream._default = self
 
     @classmethod
-    def default(cls) -> "LiveEventStream | None":
+    def default(cls) -> LiveEventStream | None:
         return cls._default
 
     async def publish(self, event_type: str, payload: dict[str, Any] | None = None, *, task_id: str | None = None) -> LiveEvent:

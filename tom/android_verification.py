@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from .success_predicates import SuccessPredicateEngine, VerificationState as PredicateState
+from .success_predicates import SuccessPredicateEngine
 
 
 class VerificationState(str, Enum):

@@ -20,6 +20,12 @@ class Qwen3VoiceConfig:
     decode_window_frames: int = int(os.getenv("TOM_QWEN3_TTS_DECODE_WINDOW", "72"))
     max_frames: int = int(os.getenv("TOM_QWEN3_TTS_MAX_FRAMES", "10000"))
     streaming: bool = os.getenv("TOM_QWEN3_TTS_STREAMING", "true").lower() not in {"0", "false", "no"}
+    # Streaming decode tuning. The upstream streaming fork emits audio every
+    # ``emit_every_frames`` codec frames after an initial ``first_chunk_frames``
+    # warm-up; the first chunk can be flushed more often to cut time-to-first-audio.
+    emit_every_frames: int = int(os.getenv("TOM_QWEN3_TTS_EMIT_EVERY_FRAMES", "4"))
+    first_chunk_emit_every: int = int(os.getenv("TOM_QWEN3_TTS_FIRST_CHUNK_EMIT_EVERY", "5"))
+    first_chunk_frames: int = int(os.getenv("TOM_QWEN3_TTS_FIRST_CHUNK_FRAMES", "24"))
     stream_url: str | None = os.getenv("TOM_QWEN3_TTS_STREAM_URL") or None
     attn_implementation: str | None = os.getenv("TOM_QWEN3_TTS_ATTN", "sdpa") or None
 
@@ -45,32 +51,12 @@ class Qwen3TTSStreamingAdapter:
     def _load(self) -> Any:
         if self._custom_model is not None:
             return self._custom_model
-        min_ram_gb = float(os.getenv("TOM_QWEN3_TTS_MIN_RAM_GB", "8"))
-        try:
-            import psutil
-            available_gb = psutil.virtual_memory().available / (1024 ** 3)
-        except Exception:
-            available_gb = 0.0
-        try:
-            import torch
-            use_cuda = bool(torch.cuda.is_available())
-            if use_cuda:
-                free_bytes, _ = torch.cuda.mem_get_info()
-                min_vram_gb = float(os.getenv("TOM_QWEN3_TTS_MIN_VRAM_GB", "4"))
-                if free_bytes / (1024 ** 3) < min_vram_gb:
-                    raise RuntimeError(f"Qwen3-TTS skipped: only {free_bytes/(1024**3):.2f} GB GPU memory free")
-            elif available_gb < min_ram_gb:
-                raise RuntimeError(f"Qwen3-TTS skipped: only {available_gb:.2f} GB RAM available; {min_ram_gb:.1f} GB required")
-        except RuntimeError:
-            raise
-        except Exception:
-            if available_gb < min_ram_gb:
-                raise RuntimeError(f"Qwen3-TTS skipped: only {available_gb:.2f} GB RAM available")
         try:
             import torch
             from qwen_tts import Qwen3TTSModel
         except ImportError as exc:
-            raise RuntimeError("Qwen3-TTS dependencies are missing. Install the TOM voice-qwen extra.") from exc
+            raise RuntimeError("Qwen3-TTS dependencies are missing. Install the TOM voice-qwen-local extra.") from exc
+        self._check_memory(torch)
         self._torch = torch
         model_path = self.config.model_dir.strip()
         if not os.path.isdir(model_path):
@@ -86,6 +72,39 @@ class Qwen3TTSStreamingAdapter:
         model = Qwen3TTSModel.from_pretrained(model_path, **kwargs)
         self._custom_model = model
         return model
+
+    @staticmethod
+    def _available_ram_gb() -> float | None:
+        """Best-effort free RAM in GiB; ``None`` when it cannot be determined."""
+        try:
+            import psutil
+        except ImportError:
+            psutil = None
+        if psutil is not None:
+            try:
+                return psutil.virtual_memory().available / (1024 ** 3)
+            except (OSError, AttributeError):
+                pass
+        try:
+            pages = os.sysconf("SC_AVPHYS_PAGES")
+            page_size = os.sysconf("SC_PAGE_SIZE")
+        except (ValueError, OSError, AttributeError):
+            return None
+        return pages * page_size / (1024 ** 3)
+
+    def _check_memory(self, torch: Any) -> None:
+        """Fail fast with a clear message instead of OOM-killing the web process."""
+        if torch.cuda.is_available():
+            min_vram_gb = float(os.getenv("TOM_QWEN3_TTS_MIN_VRAM_GB", "4"))
+            free_bytes, _ = torch.cuda.mem_get_info()
+            free_gb = free_bytes / (1024 ** 3)
+            if free_gb < min_vram_gb:
+                raise RuntimeError(f"Qwen3-TTS skipped: only {free_gb:.2f} GB GPU memory free; {min_vram_gb:.1f} GB required")
+            return
+        min_ram_gb = float(os.getenv("TOM_QWEN3_TTS_MIN_RAM_GB", "8"))
+        available_gb = self._available_ram_gb()
+        if available_gb is not None and available_gb < min_ram_gb:
+            raise RuntimeError(f"Qwen3-TTS skipped: only {available_gb:.2f} GB RAM available; {min_ram_gb:.1f} GB required")
 
     @staticmethod
     def _instruction(style: VoiceStyle, *, character: str = "", traits: str = "") -> str:
@@ -110,7 +129,12 @@ class Qwen3TTSStreamingAdapter:
 
     def _validate_language(self, language: Language) -> None:
         if language not in self.SUPPORTED_TOM_LANGUAGES:
-            raise RuntimeError(f"Qwen3-TTS production backend currently supports {sorted(x.value for x in self.SUPPORTED_TOM_LANGUAGES)} only; got {language.value}")
+            supported = sorted(x.value for x in self.SUPPORTED_TOM_LANGUAGES)
+            raise RuntimeError(
+                f"Qwen3-TTS production backend currently supports {supported} only; got {language.value}. "
+                "Hindi, Hinglish and Bengali require the Indic Parler-TTS route (voice-indic extra), "
+                "which is not enabled for production yet."
+            )
 
     def _generate(self, text: str, language: Language, voice: VoiceProfile, style: VoiceStyle) -> tuple[Any, int]:
         self._validate_language(language)

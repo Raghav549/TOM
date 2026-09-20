@@ -1,7 +1,7 @@
 import pytest
 
 from tom.success_predicates import SuccessPredicateEngine, VerificationState
-from tom.verification_policy import VerificationPolicy, VerificationMode
+from tom.verification_policy import VerificationMode, VerificationPolicy
 
 
 @pytest.fixture

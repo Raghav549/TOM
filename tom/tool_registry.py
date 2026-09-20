@@ -6,7 +6,6 @@ from typing import Any
 
 from .action_policy import ActionPolicy
 
-
 ToolHandler = Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any]]]
 
 

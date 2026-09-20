@@ -51,7 +51,7 @@ class DeviceSession:
 class RemoteDeviceTool:
     """Runtime Tool adapter that blocks until the real Android device reports execution."""
 
-    def __init__(self, name: str, risk: Risk, sessions: "LiveDeviceRegistry") -> None:
+    def __init__(self, name: str, risk: Risk, sessions: LiveDeviceRegistry) -> None:
         self.name = name
         self.risk = risk
         self.description = f"Execute {name} on the connected Android device and wait for verification."

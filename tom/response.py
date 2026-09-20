@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-import inspect
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class Responder:
@@ -43,24 +45,47 @@ class ModelResponder(Responder):
         messages = self._messages(user_message=user_message, events=events, context=context)
         try:
             return (await self.llm.complete(messages, temperature=0.7)).strip()
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - provider failures must degrade, not crash the session
             # Provider outages must remain visible through readiness/diagnostics,
             # but a conversational session can still answer with the explicit
             # deterministic fallback instead of becoming unusable.
+            logger.warning("LLM responder failed; using deterministic fallback: %s", exc)
             return await self.fallback.respond(user_message=user_message, events=events, context=context)
 
     async def stream(self, *, user_message: str, events: list[dict[str, Any]], context: dict[str, Any]) -> AsyncIterator[str]:
+        """Stream reply deltas as soon as the model produces them.
+
+        Providers that expose an async ``stream()`` are consumed incrementally so
+        voice TTS can start on the first sentence instead of waiting for the full
+        completion. Providers that only expose ``complete()`` still work: the whole
+        reply is yielded as one chunk. If the provider fails before any text was
+        emitted, the deterministic fallback answers instead.
+        """
+        messages = self._messages(user_message=user_message, events=events, context=context)
+        emitted = False
+        llm_stream = getattr(self.llm, "stream", None)
         try:
-            text = await self.llm.complete(
-                self._messages(user_message=user_message, events=events, context=context),
-                temperature=0.7,
-            )
-            if text:
-                yield text
+            if callable(llm_stream):
+                async for delta in llm_stream(messages, temperature=0.7):
+                    if delta:
+                        emitted = True
+                        yield delta
+            else:
+                text = (await self.llm.complete(messages, temperature=0.7)).strip()
+                if text:
+                    emitted = True
+                    yield text
+        except Exception as exc:  # noqa: BLE001 - provider failures must degrade, not crash the session
+            logger.warning("LLM responder stream failed (emitted=%s): %s", emitted, exc)
+            if emitted:
+                # A partial answer already reached the user; do not append an
+                # unrelated fallback sentence on top of it.
                 return
-        except Exception:
-            pass
-        yield await self.fallback.respond(user_message=user_message, events=events, context=context)
+        if emitted:
+            return
+        async for chunk in self.fallback.stream(user_message=user_message, events=events, context=context):
+            if chunk:
+                yield chunk
 
 
 class FriendlyFallback(Responder):

@@ -6,7 +6,6 @@ from typing import Any
 
 from tom.agent_events import AgentEventBus
 
-
 SpeakCallback = Callable[[str], Awaitable[None]]
 EventCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 

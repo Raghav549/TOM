@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Mapping, Protocol
 import hashlib
 import json
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
-from .tool_registry import ToolRegistry
 from .success_predicates import SuccessPredicateEngine, VerificationState
+from .tool_registry import ToolRegistry
 from .verification_policy import VerificationPolicy
 
 
