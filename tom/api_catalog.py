@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
-from typing import Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 import httpx
-
 
 PUBLIC_APIS_README = "https://raw.githubusercontent.com/public-apis/public-apis/master/README.md"
 

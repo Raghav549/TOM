@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import html
 import hmac
+import html
+import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
@@ -23,12 +28,11 @@ from tom.credentials import CredentialManager
 from tom.device.core_receiver import CoreBridgeReceiver
 from tom.device_auth import DeviceAuthenticator
 from tom.device_capabilities import DeviceCapabilityRegistry
-from tom.google_oauth import GoogleOAuth
 from tom.integration_registry import status as integration_status
 from tom.live_events import LiveEventStream
 from tom.live_task_bridge import LiveTaskBridge
 from tom.memory import MemoryStore
-from tom.models import AgentRequest
+from tom.models import AgentRequest, AgentResponse
 from tom.perception.pipeline import MultimodalRuntime
 from tom.perception.vision_runtime import OpenAICompatibleVisionAdapter, VisionRuntimeConfig
 from tom.permissions import Decision, PermissionPolicy
@@ -43,11 +47,45 @@ from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry
 from tom.voice.director import ConversationSignals
 from tom.voice.models import VOICE_PROFILES
-from tom.voice.session import VoiceSession
 from tom.voice.qwen3_tts_service import router as qwen3_tts_router
+from tom.voice.session import VoiceSession
 from tom.voice.tts_factory import build_streaming_tts
 
-app = FastAPI(title="TOM Agent Runtime", version="1.0.0")
+logger = logging.getLogger(__name__)
+
+try:
+    APP_VERSION = package_version("tom-agent")
+except PackageNotFoundError:  # running from a plain checkout without installation
+    APP_VERSION = "0.0.0-dev"
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Keep process liveness independent from slow or remote capability probes.
+
+    Render must be able to start and serve /health even when an Android device is
+    offline or a remote model service is temporarily unavailable. Full production
+    dependency verification remains available through /ready and
+    /v1/production/readiness, where failures stay truthful instead of crashing the
+    web process during boot.
+    """
+    application.state.tom_startup_readiness = {
+        "environment": settings.environment,
+        "mode": "deferred_readiness_probe",
+    }
+    try:
+        yield
+    finally:
+        browser = getattr(application.state, "tom_browser_runtime", None)
+        close = getattr(browser, "close", None)
+        if callable(close):
+            try:
+                await close()
+            except Exception as exc:  # noqa: BLE001 - shutdown must never raise
+                logger.warning("browser runtime shutdown failed: %s", exc)
+
+
+app = FastAPI(title="TOM Agent Runtime", version=APP_VERSION, lifespan=lifespan)
 profile = CompanionProfile()
 tools = ToolRegistry({})
 credentials = CredentialManager(settings.data_dir)
@@ -128,22 +166,6 @@ voice_session = VoiceSession(voice_engine)
 app.state.tom_voice_engine = voice_engine
 
 
-@app.on_event("startup")
-async def initialize_production_startup() -> None:
-    """Keep process liveness independent from slow or remote capability probes.
-
-    Render must be able to start and serve /health even when an Android device is
-    offline or a remote model service is temporarily unavailable. Full production
-    dependency verification remains available through /ready and
-    /v1/production/readiness, where failures stay truthful instead of crashing the
-    web process during boot.
-    """
-    app.state.tom_startup_readiness = {
-        "environment": settings.environment,
-        "mode": "deferred_readiness_probe",
-    }
-
-
 class ProfileUpdate(BaseModel):
     name: str | None = None
     interests: list[str] | None = None
@@ -195,7 +217,72 @@ def require_credential_provisioner(auth: HTTPAuthorizationCredentials | None = D
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "tom", "version": "1.0.0"}
+    return {"status": "ok", "service": "tom", "version": APP_VERSION}
+
+
+@app.post("/v1/agent", response_model=AgentResponse)
+async def agent(request: AgentRequest) -> AgentResponse:
+    """Run a text request through plan → policy → tools → verification.
+
+    High-impact steps are returned in ``pending_approval`` instead of being
+    executed; approve them with ``POST /v1/agent/approve``.
+    """
+    return await runtime.handle(request)
+
+
+@app.post("/v1/agent/approve")
+async def agent_approve(request: ApprovalRequest) -> dict[str, object]:
+    try:
+        return await runtime.approve_and_execute(request.conversation_id, request.tool_index)
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail="no pending action at that index") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/v1/agent/{conversation_id}/pending")
+async def agent_pending(conversation_id: str) -> dict[str, object]:
+    calls = runtime._pending.get(conversation_id, [])
+    return {
+        "conversation_id": conversation_id,
+        "pending_approval": [call.model_dump() for call in calls],
+        "task": runtime.task_state(conversation_id),
+    }
+
+
+@app.get("/v1/tasks/{task_id}")
+async def task_state(task_id: str) -> dict[str, object]:
+    state = runtime.task_state(task_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="unknown task")
+    return state
+
+
+@app.get("/v1/profile")
+async def get_profile() -> dict[str, object]:
+    return {
+        "name": profile.name,
+        "style": profile.style,
+        "traits": list(profile.traits),
+        "interests": sorted(profile.interests),
+        "language": profile.language,
+        "voice_id": profile.voice_id,
+        "commentary_enabled": profile.commentary_enabled,
+    }
+
+
+@app.post("/v1/profile")
+async def update_profile(update: ProfileUpdate) -> dict[str, object]:
+    profile.set_identity(name=update.name, style=update.style)
+    if update.interests is not None:
+        profile.set_interests(update.interests)
+    if update.language is not None:
+        profile.language = update.language.strip()[:16] or "auto"
+    if update.commentary_enabled is not None:
+        profile.commentary_enabled = update.commentary_enabled
+    return await get_profile()
 
 
 @app.get("/ready")

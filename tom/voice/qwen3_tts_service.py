@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .models import Language, VoiceProfile, VoiceStyle, VOICE_PROFILES
+from .models import VOICE_PROFILES, Language, VoiceProfile, VoiceStyle
 from .qwen3_tts_stream import Qwen3TTSStreamingAdapter, Qwen3VoiceConfig
 
 

@@ -1,7 +1,7 @@
 import pytest
 
-from tom.persistence import SupabaseTaskStore
 from tom.action_predicates import VerificationContext, default_predicates
+from tom.persistence import SupabaseTaskStore
 
 
 def test_persistence_requires_explicit_supabase_credentials(monkeypatch: pytest.MonkeyPatch) -> None:

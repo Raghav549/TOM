@@ -1,9 +1,9 @@
 import pytest
 
-from tom.approval import ApprovalGate
 from tom.agent_events import AgentEventBus
+from tom.approval import ApprovalGate
 from tom.memory import MemoryStore
-from tom.models import AgentRequest, Plan, ToolCall, Risk
+from tom.models import AgentRequest, Plan, Risk, ToolCall
 from tom.permissions import PermissionPolicy
 from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry

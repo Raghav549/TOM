@@ -68,6 +68,17 @@ class StreamingFasterWhisper:
         self._elapsed_ms = 0
         self._last_text = ""
 
+    def load(self, pcm16: bytes, sample_rate: int = 16_000) -> None:
+        """Replace the rolling buffer with a complete utterance for ``final()``."""
+        if sample_rate != 16_000:
+            raise ValueError("StreamingFasterWhisper requires 16 kHz audio")
+        self.reset()
+        self._buffer.extend(pcm16)
+
+    @property
+    def buffered_ms(self) -> int:
+        return int(len(self._buffer) / 2 * 1000 / 16_000)
+
     def push(self, pcm16: bytes, sample_rate: int = 16_000) -> PartialTranscript | None:
         if sample_rate != 16_000:
             raise ValueError("StreamingFasterWhisper requires 16 kHz audio")

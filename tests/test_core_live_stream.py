@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from tom.live_events import LiveEventStream
 from tom.api.bridge_server import AndroidBridgeHub
+from tom.live_events import LiveEventStream
 
 
 @pytest.mark.asyncio

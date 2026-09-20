@@ -56,5 +56,5 @@ class SemanticConversationMemory:
         matrix = np.asarray(model.encode([self._text(row) for row in rows], normalize_embeddings=True), dtype=np.float32)
         query_vec = np.asarray(model.encode(query, normalize_embeddings=True), dtype=np.float32)
         scores = matrix @ query_vec
-        ranked = sorted(zip(rows, scores.tolist()), key=lambda pair: pair[1], reverse=True)
+        ranked = sorted(zip(rows, scores.tolist(), strict=True), key=lambda pair: pair[1], reverse=True)
         return [row for row, score in ranked[: max(1, min(limit, 20))] if float(score) >= 0.25]

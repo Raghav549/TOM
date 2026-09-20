@@ -1,4 +1,3 @@
-import pytest
 
 from tom.action_verification import ActionSpecificVerifier
 from tom.models import Risk, ToolCall, ToolResult

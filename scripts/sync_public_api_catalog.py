@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """Validate/summarize TOM's curated Public APIs catalogue.
 
 The upstream repository is intentionally not copied wholesale into the runtime:
 it is a discovery catalogue and entries change. Run this script during a
 maintenance/update cycle to compare TOM's typed adapters with the upstream list.
 """
+
+from __future__ import annotations
 
 import re
 import urllib.request

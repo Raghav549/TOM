@@ -61,7 +61,7 @@ class MemoryStore:
             matrix = np.asarray(self._semantic_model.encode(texts, normalize_embeddings=True), dtype=np.float32)
             query_vec = np.asarray(self._semantic_model.encode(query, normalize_embeddings=True), dtype=np.float32)
             scores = matrix @ query_vec
-            ranked = sorted(zip(candidates, scores.tolist()), key=lambda pair: pair[1], reverse=True)
+            ranked = sorted(zip(candidates, scores.tolist(), strict=True), key=lambda pair: pair[1], reverse=True)
             return [item for item, score in ranked[:limit] if float(score) >= 0.25]
         except Exception:  # noqa: BLE001 - optional semantic backend
             self._semantic_disabled = True

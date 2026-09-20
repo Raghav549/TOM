@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tempfile
 from dataclasses import dataclass
@@ -80,6 +81,17 @@ class ProductionReadiness:
         ]
         return items
 
+    def report(self, *, device_sessions: Any = None) -> dict[str, object]:
+        """Synchronous configuration-only readiness report.
+
+        This never performs network or model probes, so it is safe to call from
+        tests, CLI tooling and synchronous startup code. Use :meth:`probe` for the
+        authoritative report that also verifies remote providers.
+        """
+        checks = {item.name: item for item in self.checks()}
+        self._probe_persistence(checks)
+        return self._build_report(checks, device_sessions=device_sessions)
+
     async def probe(self, *, browser: Any = None, device_sessions: Any = None) -> dict[str, object]:
         checks = {item.name: item for item in self.checks()}
         await self._probe_llm(checks)
@@ -87,7 +99,9 @@ class ProductionReadiness:
         await self._probe_local_models(checks)
         await self._probe_browser(checks, browser)
         self._probe_persistence(checks)
+        return self._build_report(checks, device_sessions=device_sessions)
 
+    def _build_report(self, checks: dict[str, CapabilityCheck], *, device_sessions: Any) -> dict[str, object]:
         connected = bool(device_sessions)
         checks["device_connected"] = CapabilityCheck(
             "device_connected",
@@ -138,7 +152,7 @@ class ProductionReadiness:
                             saw_done = True
                             break
                         try:
-                            payload = __import__("json").loads(data)
+                            payload = json.loads(data)
                         except ValueError:
                             continue
                         choices = payload.get("choices") or []

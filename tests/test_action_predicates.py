@@ -1,4 +1,3 @@
-import pytest
 
 from tom.action_predicates import VerificationContext, default_predicates
 

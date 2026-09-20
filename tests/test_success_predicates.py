@@ -1,6 +1,5 @@
 from tom.success_predicates import SuccessPredicateEngine, VerificationState
 
-
 ENGINE = SuccessPredicateEngine()
 
 

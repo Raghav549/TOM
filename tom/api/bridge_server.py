@@ -148,7 +148,7 @@ class AndroidBridgeHub:
                 status = verified["verification"]["status"]
                 return {**result, "status": status, "verified": status == "verified", "verification": verified["verification"], "observation_id": verified.get("observation_id")}
             return result
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return {"accepted": False, "status": "action_timeout", "action_id": action_id}
         finally:
             async with self.lock:
@@ -167,7 +167,7 @@ class AndroidBridgeHub:
         await self.send(device_id, {"type": "SCREENSHOT_REQUEST", "message_id": secrets.token_urlsafe(12), "sequence": 0, "device_id": device_id, "session_id": session_id, "payload": {"request_id": secrets.token_urlsafe(12), "task_id": task_id, "action_id": action_id, "reason": "post_action_verification"}})
         try:
             return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self.emit("verification.unknown", {"device_id": device_id, "action_id": action_id}, task_id=task_id)
             return None
         finally:

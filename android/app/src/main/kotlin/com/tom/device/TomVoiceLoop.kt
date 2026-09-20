@@ -34,6 +34,9 @@ class TomVoiceLoop(
     private var echoCanceler: AcousticEchoCanceler? = null
     private val pcmPlayer = TomPcmPlayer(24_000)
     private val responseAudioReceived = AtomicBoolean(false)
+    private val responseFinal = AtomicBoolean(false)
+    private val audioFinished = AtomicBoolean(false)
+    private val fallbackSpoken = AtomicBoolean(false)
     private val responseText = StringBuilder()
     private val nativeTts: TextToSpeech = TextToSpeech(context.applicationContext) { }
 
@@ -124,10 +127,29 @@ class TomVoiceLoop(
         }
     }
 
-    private fun speakFallbackIfNeeded() {
-        if (!running.get() || responseAudioReceived.get()) return
-        val text = responseText.toString().trim()
+    /** Reset per-turn state when a new user utterance has been transcribed. */
+    private fun beginResponseTurn() {
+        synchronized(responseText) { responseText.clear() }
+        responseAudioReceived.set(false)
+        responseFinal.set(false)
+        audioFinished.set(false)
+        fallbackSpoken.set(false)
+    }
+
+    /**
+     * Speak the text reply with the phone's own TTS only when Core produced no audio.
+     *
+     * Core streams `audio_start` as soon as the first phrase is ready, so the text
+     * reply and the PCM stream now interleave. The fallback therefore waits until
+     * both the final `response` and `audio_end` (or a TTS error) have arrived, and
+     * it speaks at most once per turn.
+     */
+    private fun speakFallbackIfNeeded(force: Boolean = false) {
+        if (!running.get() || responseAudioReceived.get() || fallbackSpoken.get()) return
+        if (!force && !(responseFinal.get() && audioFinished.get())) return
+        val text = synchronized(responseText) { responseText.toString().trim() }
         if (text.isBlank()) return
+        fallbackSpoken.set(true)
         val language = if (text.any { it in '\u0900'..'\u097F' }) Locale("hi", "IN") else Locale.US
         runCatching {
             nativeTts.language = language
@@ -147,25 +169,39 @@ class TomVoiceLoop(
             }
             "connected" -> onState("core_handshake")
             "partial_transcript" -> onTranscript(payload.optString("text"))
-            "transcript" -> onTranscript(payload.optString("text"))
-            "response_partial" -> responseText.append(payload.optString("text"))
+            "transcript" -> {
+                if (payload.optBoolean("final", false)) beginResponseTurn()
+                onTranscript(payload.optString("text"))
+            }
+            "response_partial" -> synchronized(responseText) { responseText.append(payload.optString("text")) }
             "response" -> {
                 val finalText = payload.optString("text")
                 if (finalText.isNotBlank()) {
-                    responseText.clear()
-                    responseText.append(finalText)
+                    synchronized(responseText) {
+                        responseText.clear()
+                        responseText.append(finalText)
+                    }
                 }
+                responseFinal.set(true)
                 speakFallbackIfNeeded()
             }
             "audio_start" -> {
                 responseAudioReceived.set(false)
-                responseText.clear()
-                pcmPlayer.start()
+                audioFinished.set(false)
+                fallbackSpoken.set(false)
+                runCatching { pcmPlayer.start() }.onFailure { onError("PCM player start failed: ${it.message}") }
                 onState("speaking")
             }
-            "audio_stop", "audio_end" -> {
+            "audio_stop" -> {
+                // Barge-in: TOM was interrupted on purpose, never read the rest aloud.
                 pcmPlayer.stop()
-                if (payload.optString("type") == "audio_end") speakFallbackIfNeeded()
+                fallbackSpoken.set(true)
+                onState("listening")
+            }
+            "audio_end" -> {
+                pcmPlayer.stop()
+                audioFinished.set(true)
+                speakFallbackIfNeeded()
                 onState("listening")
             }
             "state" -> onState("core • ${payload.optString("value")}")
@@ -175,7 +211,13 @@ class TomVoiceLoop(
                 onState("mic • rms=${rms.toInt()} vad=${(vad * 100).toInt()}%")
             }
             "error" -> {
-                speakFallbackIfNeeded()
+                when (payload.optString("stage")) {
+                    "tts" -> {
+                        audioFinished.set(true)
+                        speakFallbackIfNeeded()
+                    }
+                    "voice_pipeline" -> speakFallbackIfNeeded(force = true)
+                }
                 onError("${payload.optString("stage", "voice")} • ${payload.optString("detail", "unknown error")}")
             }
         }
@@ -244,12 +286,22 @@ class TomVoiceLoop(
                     rms += signed.toDouble() * signed.toDouble()
                 }
                 rms = kotlin.math.sqrt(rms / (frame.size / 2))
-                val voiceDetected = rms >= 160.0
+                // While TOM is speaking, the echo canceller does not remove all
+                // speaker bleed, so barge-in needs a clearly louder signal than
+                // normal turn detection. Otherwise TOM would interrupt itself.
+                val tomSpeaking = pcmPlayer.isPlaying()
+                val threshold = if (tomSpeaking) BARGE_IN_RMS else SPEECH_RMS
+                val voiceDetected = rms >= threshold
 
                 if (!activeTurn && voiceDetected) {
                     activeTurn = true
                     silenceFrames = 0
-                    coreSocket?.send(JSONObject().put("type", "audio_start").toString())
+                    coreSocket?.send(
+                        JSONObject()
+                            .put("type", "audio_start")
+                            .put("barge_in", tomSpeaking)
+                            .toString()
+                    )
                 }
                 if (activeTurn) {
                     if (voiceDetected) silenceFrames = 0 else silenceFrames++
@@ -281,5 +333,13 @@ class TomVoiceLoop(
         recorder = null
         runCatching { echoCanceler?.release() }
         echoCanceler = null
+    }
+
+    private companion object {
+        /** RMS (16-bit PCM) above which a 20 ms frame counts as speech. */
+        const val SPEECH_RMS = 160.0
+
+        /** Louder threshold used while TOM's own audio is playing. */
+        const val BARGE_IN_RMS = 480.0
     }
 }

@@ -12,8 +12,9 @@ class GuardedContext:
 
 
 _INSTRUCTION_PATTERNS = (
-    re.compile(r"ignore (?:all|any|previous|prior) instructions", re.IGNORECASE),
-    re.compile(r"system message", re.IGNORECASE),
+    # "ignore all previous instructions", "ignore the prior instructions", …
+    re.compile(r"(?:ignore|disregard|forget)\s+(?:\w+\s+){0,3}(?:instructions|rules|prompt)", re.IGNORECASE),
+    re.compile(r"system (?:message|prompt)", re.IGNORECASE),
     re.compile(r"developer message", re.IGNORECASE),
     re.compile(r"reveal (?:your|the) (?:system|developer) prompt", re.IGNORECASE),
 )

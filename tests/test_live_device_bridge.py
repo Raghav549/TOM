@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from tom.device.live import DeviceSession, LiveDeviceRegistry, RemoteDeviceTool
-from tom.models import Risk, ToolCall
+from tom.models import Risk
 
 
 class FakeWebSocket:

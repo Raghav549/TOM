@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
 import time
 import uuid
+from dataclasses import dataclass
+from enum import Enum
 
 
 class RiskLevel(str, Enum):

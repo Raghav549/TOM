@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from .success_predicates import SuccessPredicateEngine, VerificationResult, VerificationState
-
 
 _TERMINAL_FAILURES = {
     "failed", "failure", "error", "declined", "rejected", "cancelled", "canceled",
