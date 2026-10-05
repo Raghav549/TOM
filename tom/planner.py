@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .models import Plan, Risk, ToolCall
 from .qwen_ui_policy import QwenUIPolicy
+
+logger = logging.getLogger(__name__)
 
 
 class Planner(Protocol):
@@ -57,6 +60,7 @@ class ModelPlanner:
 
     llm: Any
     fallback: Planner
+    allow_fallback: bool = True
     ui_policy: QwenUIPolicy = field(default_factory=QwenUIPolicy)
 
     async def plan(self, goal: str, context: dict[str, Any]) -> Plan:
@@ -121,13 +125,34 @@ class ModelPlanner:
         ]
         try:
             raw = await self.llm.complete(messages, temperature=0, response_format={"type": "json_object"})
-            return self._parse(raw, goal, tools)
-        except Exception:  # noqa: BLE001 - model providers are external boundaries
-            return await self.fallback.plan(goal, context)
+            try:
+                return self._parse(raw, goal, tools)
+            except ValueError:
+                # Give the actual model one bounded chance to repair its schema
+                # before entering recovery. No execution occurs before validation.
+                messages.append({"role": "assistant", "content": raw[:16000]})
+                messages.append({"role": "user", "content": "The plan failed schema/tool validation. Return corrected JSON only, using registered tools and no executable steps when asking clarification."})
+                repaired = await self.llm.complete(messages, temperature=0, response_format={"type": "json_object"})
+                return self._parse(repaired, goal, tools)
+        except (RuntimeError, ValueError) as exc:
+            logger.warning("planner.model_failed error_type=%s", type(exc).__name__, exc_info=True)
+            if not self.allow_fallback:
+                raise
+            # Recovery may only use registered tools, never an invented capability.
+            recovery = await self.fallback.plan(goal, context)
+            allowed = {item["name"] for item in tools}
+            if any(step.name not in allowed for step in recovery.steps):
+                raise RuntimeError("Model planning failed and no supported recovery plan is available") from exc
+            return recovery.model_copy(update={
+                "explanation": f"Model failure ({type(exc).__name__}); deterministic recovery. " + recovery.explanation,
+            })
 
     @staticmethod
     def _parse(raw: str, goal: str, tools: list[dict[str, Any]]) -> Plan:
         text = raw.strip()
+        # Qwen3 may return a completed reasoning block before the JSON object.
+        if text.startswith("<think>") and "</think>" in text:
+            text = text.split("</think>", 1)[1].strip()
         if text.startswith("```"):
             text = text.strip("`").replace("json\n", "", 1).strip()
         payload = json.loads(text)
@@ -138,8 +163,9 @@ class ModelPlanner:
         tool_risks = {item.get("name"): item.get("risk") for item in tools}
         for step in plan.steps:
             declared = tool_risks.get(step.name)
-            if declared and step.risk.value != declared:
-                raise ValueError(f"model risk mismatch for tool: {step.name}")
+            if declared:
+                # Registry policy is authoritative, not model-generated labels.
+                step.risk = Risk(declared)
         if plan.needs_clarification and plan.steps:
             raise ValueError("clarification plan must not contain executable steps")
         if plan.needs_clarification and not plan.clarification_question.strip():

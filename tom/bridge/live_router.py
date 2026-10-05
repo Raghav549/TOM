@@ -42,6 +42,8 @@ class LiveBridgeRouter:
             return None
         if envelope.type in {"ACTION_ACK", "ACTION_RESULT"}:
             action_id = envelope.payload.get("action_id") or envelope.correlation_id
+            if not isinstance(action_id, str):
+                return None
             pending = self.pending.get(action_id)
             if not pending:
                 return None

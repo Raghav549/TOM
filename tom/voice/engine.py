@@ -68,7 +68,7 @@ class ExternalCommandSpeechEngine:
                     "language": language.value,
                     "voice_id": voice.id,
                     "reference_audio": voice.reference_audio,
-                    "style": style.value,
+                    "style": style.model_dump(mode="json"),
                     "output": str(output),
                 }, ensure_ascii=False),
                 encoding="utf-8",
@@ -84,6 +84,8 @@ class ExternalCommandSpeechEngine:
                 shell=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.config.timeout_s,
                 check=False,
             )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import struct
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -47,8 +48,13 @@ class Qwen3TTSStreamingAdapter:
         self.config = config or Qwen3VoiceConfig()
         self._custom_model: Any = None
         self._torch: Any = None
+        self._model_lock = threading.RLock()
 
     def _load(self) -> Any:
+        with self._model_lock:
+            return self._load_unlocked()
+
+    def _load_unlocked(self) -> Any:
         if self._custom_model is not None:
             return self._custom_model
         try:
@@ -62,9 +68,11 @@ class Qwen3TTSStreamingAdapter:
         if not os.path.isdir(model_path):
             raise RuntimeError(f"MODEL_NOT_DOWNLOADED: {model_path}")
         device = ("cuda:0" if torch.cuda.is_available() else "cpu") if self.config.device == "auto" else self.config.device
-        dtype_name = self.config.dtype if torch.cuda.is_available() else os.getenv("TOM_QWEN3_TTS_CPU_DTYPE", "float32")
-        dtype = getattr(torch, dtype_name, torch.float32)
-        kwargs: dict[str, Any] = {"dtype": dtype}
+        dtype_name = self.config.dtype if device.startswith("cuda") else os.getenv("TOM_QWEN3_TTS_CPU_DTYPE", "float32")
+        if dtype_name not in {"float32", "float16", "bfloat16"}:
+            raise RuntimeError(f"Unsupported Qwen3-TTS dtype: {dtype_name}")
+        dtype = getattr(torch, dtype_name)
+        kwargs: dict[str, Any] = {"dtype": dtype, "local_files_only": True}
         if device:
             kwargs["device_map"] = device
         if self.config.attn_implementation:
@@ -94,9 +102,12 @@ class Qwen3TTSStreamingAdapter:
 
     def _check_memory(self, torch: Any) -> None:
         """Fail fast with a clear message instead of OOM-killing the web process."""
-        if torch.cuda.is_available():
+        use_cuda = self.config.device.startswith("cuda") or (self.config.device == "auto" and torch.cuda.is_available())
+        if use_cuda and not torch.cuda.is_available():
+            raise RuntimeError("Requested Qwen3-TTS CUDA device is unavailable")
+        if use_cuda:
             min_vram_gb = float(os.getenv("TOM_QWEN3_TTS_MIN_VRAM_GB", "4"))
-            free_bytes, _ = torch.cuda.mem_get_info()
+            free_bytes, _ = torch.cuda.mem_get_info(None if self.config.device == "auto" else self.config.device)
             free_gb = free_bytes / (1024 ** 3)
             if free_gb < min_vram_gb:
                 raise RuntimeError(f"Qwen3-TTS skipped: only {free_gb:.2f} GB GPU memory free; {min_vram_gb:.1f} GB required")
@@ -167,18 +178,25 @@ class Qwen3TTSStreamingAdapter:
     @staticmethod
     def _to_pcm16_bytes(chunk: Any) -> bytes:
         if isinstance(chunk, (bytes, bytearray, memoryview)):
+            if len(chunk) % 2:
+                raise RuntimeError("PCM16 byte length must be even")
             return bytes(chunk)
         import numpy as np
         if hasattr(chunk, "detach"):
             chunk = chunk.detach().float().cpu().numpy()
         pcm = np.asarray(chunk).reshape(-1)
+        if not np.isfinite(pcm).all():
+            raise RuntimeError("PCM contains non-finite samples")
         if pcm.dtype.kind == "f":
             pcm = np.clip(pcm, -1.0, 1.0)
-            return (pcm * 32767.0).astype(np.int16).tobytes()
-        return pcm.astype(np.int16, copy=False).tobytes()
+            return (pcm * 32767.0).astype("<i2").tobytes()
+        return np.clip(pcm, -32768, 32767).astype("<i2").tobytes()
 
     def _stream_local(self, text: str, language: Language, voice: VoiceProfile, style: VoiceStyle) -> Iterator[TTSChunk]:
-        waveform, sample_rate = self._generate(text, language, voice, style)
+        # Official qwen-tts generates a complete waveform. This is transport
+        # chunking, not incremental model inference; advertise it truthfully.
+        with self._model_lock:
+            waveform, sample_rate = self._generate(text, language, voice, style)
         pcm16 = self._to_pcm16_bytes(waveform)
         packet_bytes = max(320, int(self.SAMPLE_RATE * self.config.chunk_ms / 1000) * 2)
         for offset in range(0, len(pcm16), packet_bytes):
@@ -193,7 +211,9 @@ class Qwen3TTSStreamingAdapter:
         token = os.getenv("TOM_QWEN3_TTS_AUTH_TOKEN", "").strip()
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        with httpx.stream("POST", self.config.stream_url, json=payload, headers=headers, timeout=None) as response:
+        if not self.config.stream_url:
+            raise RuntimeError("Qwen3-TTS stream URL is not configured")
+        with httpx.stream("POST", self.config.stream_url, json=payload, headers=headers, timeout=httpx.Timeout(float(os.getenv("TOM_QWEN3_TTS_TIMEOUT_SECONDS", "180")), connect=10.0)) as response:
             response.raise_for_status()
             if response.headers.get("x-tom-audio-format") != "pcm_s16le" or response.headers.get("x-tom-sample-rate") != str(self.SAMPLE_RATE) or response.headers.get("x-tom-channels") != "1":
                 raise RuntimeError("Qwen3-TTS stream contract headers are invalid")
@@ -225,6 +245,8 @@ class Qwen3TTSStreamingAdapter:
                     elif frame_type == self.FRAME_ERROR:
                         raise RuntimeError(frame.decode("utf-8", "replace") or "Qwen3-TTS server error")
                     elif frame_type == self.FRAME_END:
+                        if frame or buffer:
+                            raise RuntimeError("Invalid trailing Qwen3-TTS end frame data")
                         ended = True
                         break
                     else:

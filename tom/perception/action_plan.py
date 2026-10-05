@@ -39,7 +39,7 @@ class GroundedActionPlanner:
             if target.fused_score < threshold or not target.node_id or not target.bounds:
                 continue
             node = next((n for n in nodes if n.node_id == target.node_id), None)
-            if node is None or not node.enabled or not node.clickable:
+            if node is None or not node.enabled or not node.clickable or not node.bounds:
                 continue
             return GroundedActionPlan(
                 action="tap_node",

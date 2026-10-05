@@ -62,3 +62,19 @@ The verifier/recovery architecture is informed by V-Droid, VeriSafe Agent, VeriG
 
 ## License
 Apache-2.0. See `LICENSE`.
+
+## Local-first audit and verification
+
+The default local model is now Ollama `qwen3:4b` at
+`http://127.0.0.1:11434/v1`; a local Ollama server does not require an API key.
+Install the exact tag with `ollama pull qwen3:4b`. Model failure is reported
+explicitly unless `TOM_PLANNER_ALLOW_FALLBACK=true` is deliberately enabled.
+Set `TOM_API_TOKEN` before exposing operator APIs. Optional read-only document
+tools are enabled by `TOM_WORKSPACE_DIR`.
+
+See [the audit report](docs/AUDIT_REPORT_2026-10-05.md) for changes, actual test
+results, Windows/local-model setup instructions, security boundaries, and
+remaining limitations. The real-model verification command is
+`python scripts/smoke_local_models.py`; missing models cause a nonzero exit,
+not a simulated success. Qwen3-TTS currently uses buffered inference followed
+by PCM16 transport chunking, not incremental model generation.

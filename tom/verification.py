@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from tom.action_predicates import PredicateResult, VerificationContext, default_predicates
-from tom.perception import ScreenObservation
 
 
 @dataclass(frozen=True)
@@ -20,8 +19,8 @@ class VerificationResult:
 class ActionVerifier(Protocol):
     async def verify(
         self,
-        before: ScreenObservation | None,
-        after: ScreenObservation | None,
+        before: object | None,
+        after: object | None,
         expected: str,
         *,
         action: str | None = None,
@@ -41,8 +40,8 @@ class BasicStateVerifier:
 
     async def verify(
         self,
-        before: ScreenObservation | None,
-        after: ScreenObservation | None,
+        before: object | None,
+        after: object | None,
         expected: str,
         *,
         action: str | None = None,
@@ -61,7 +60,7 @@ class BasicStateVerifier:
             tool_result=tool_result or {},
         )
         result = self.predicates.evaluate(context)
-        return _from_predicate(result, context.after, action_name)
+        return _from_predicate(result, dict(context.after) if context.after is not None else None, action_name)
 
 
 def _from_predicate(result: PredicateResult, observed: dict[str, Any] | None, action: str) -> VerificationResult:
@@ -75,7 +74,7 @@ def _from_predicate(result: PredicateResult, observed: dict[str, Any] | None, ac
     )
 
 
-def _observation_dict(observation: ScreenObservation | None) -> dict[str, Any] | None:
+def _observation_dict(observation: object | None) -> dict[str, Any] | None:
     if observation is None:
         return None
     if hasattr(observation, "model_dump"):

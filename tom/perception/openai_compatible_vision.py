@@ -72,7 +72,7 @@ class OpenAICompatibleVision:
             if not 0.0 <= confidence <= 1.0:
                 continue
             try:
-                coords = tuple(int(v) for v in bounds)
+                coords = (int(bounds[0]), int(bounds[1]), int(bounds[2]), int(bounds[3]))
             except (TypeError, ValueError):
                 continue
             if coords[2] <= coords[0] or coords[3] <= coords[1] or min(coords) < 0:

@@ -159,7 +159,7 @@ class CoreBridgeReceiver:
                 "reason": "no action is bound to this observation",
             }
         else:
-            result = ToolResult(tool=call.name, success=True, output={"observation_received": True})
+            tool_result = ToolResult(tool=call.name, success=True, output={"observation_received": True})
             explicit = call.arguments.get("success_predicate")
             if isinstance(explicit, dict):
                 verdict = self.effect_verifier.verify(
@@ -175,13 +175,13 @@ class CoreBridgeReceiver:
                     "reason": verdict.reason,
                 }
             else:
-                verdict = self.verifier.verify(call, result, before=before_state, after=after_state, provider={})
+                predicate_verdict = self.verifier.verify(call, tool_result, before=before_state, after=after_state, provider={})
                 verification = {
-                    "status": "verified" if verdict.ok else "failed",
-                    "confidence": verdict.confidence,
-                    "predicate": verdict.predicate,
-                    "evidence": list(verdict.evidence),
-                    "reason": verdict.reason,
+                    "status": "verified" if predicate_verdict.ok else "failed",
+                    "confidence": predicate_verdict.confidence,
+                    "predicate": predicate_verdict.predicate,
+                    "evidence": list(predicate_verdict.evidence),
+                    "reason": predicate_verdict.reason,
                 }
         result = {
             "task_id": pending.payload.get("task_id") or None,

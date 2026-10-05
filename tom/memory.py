@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -26,13 +28,21 @@ class MemoryStore:
     def recent(self, conversation_id: str, limit: int = 20) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
-        rows: list[dict[str, Any]] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            item = json.loads(line)
-            if item.get("conversation_id") == conversation_id:
-                rows.append(item)
+        if limit <= 0:
+            return []
+        retained: deque[dict[str, Any]] = deque(maxlen=max(limit, 2000))
+        with self.path.open(encoding="utf-8") as handle:
+            for number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    logging.getLogger(__name__).warning("Ignoring corrupt memory record line=%d", number)
+                    continue
+                if isinstance(item, dict) and item.get("conversation_id") == conversation_id:
+                    retained.append(item)
+        rows = list(retained)
         recent = rows[-limit:]
         if os.getenv("TOM_SEMANTIC_MEMORY_ENABLED", "true").strip().lower() not in {"1", "true", "yes", "on"}:
             return recent
@@ -42,7 +52,7 @@ class MemoryStore:
         semantic = self._semantic_retrieve(query, rows[:-limit], max(0, min(6, limit // 2)))
         if not semantic:
             return recent
-        seen = {id(item) for item in recent}
+        seen = {id(item) for item in semantic}
         return semantic + [item for item in recent if id(item) not in seen]
 
     def _semantic_retrieve(self, query: str, candidates: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -54,7 +64,8 @@ class MemoryStore:
             if self._semantic_model is None:
                 from sentence_transformers import SentenceTransformer
                 self._semantic_model = SentenceTransformer(
-                    os.getenv("TOM_SEMANTIC_MEMORY_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+                    os.getenv("TOM_SEMANTIC_MEMORY_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
+                    local_files_only=True,
                 )
             import numpy as np
             texts = [str(item.get("content", "")) for item in candidates]

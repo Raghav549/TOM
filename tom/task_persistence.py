@@ -33,7 +33,7 @@ class DurableTaskPersistence:
 
     def __init__(self, store: SupabaseTaskStore | None = None, path: str | Path | None = None) -> None:
         self.store = store
-        self.path = Path(path or os.getenv("TOM_TASK_PERSISTENCE_PATH", "data/tasks.jsonl"))
+        self.path = Path(path or os.getenv("TOM_TASK_PERSISTENCE_PATH") or "data/tasks.jsonl")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = Lock()
 

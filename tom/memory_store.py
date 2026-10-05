@@ -115,7 +115,7 @@ class MemoryStore:
             kind=str(row[1]),
             key=str(row[2]),
             value=json.loads(str(row[3])),
-            confidence=float(row[4]),
+            confidence=float(str(row[4])),
             source=str(row[5]),
             created_at=str(row[6]),
             updated_at=str(row[7]),

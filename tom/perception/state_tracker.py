@@ -74,8 +74,8 @@ class ScreenStateTracker:
         }
         return ScreenState(
             fingerprint=ScreenStateTracker._fingerprint(stable),
-            package_name=stable["package"],
-            window_id=stable["window"],
+            package_name=str(stable["package"]) if stable["package"] is not None else None,
+            window_id=stable["window"] if isinstance(stable["window"], int) else None,
             node_count=len(nodes),
             visible_text=tuple(texts[:200]),
             notification_count=len(notifications),

@@ -4,11 +4,12 @@ import asyncio
 import os
 import secrets
 import struct
+import threading
 from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -28,6 +29,7 @@ class Qwen3TTSRequest(BaseModel):
 
 router = APIRouter(prefix="/v1/tts/qwen3", tags=["qwen3-tts"])
 _adapter: Qwen3TTSStreamingAdapter | None = None
+_generation_slot = threading.BoundedSemaphore(1)
 
 
 def _adapter_for_service() -> Qwen3TTSStreamingAdapter:
@@ -41,7 +43,7 @@ def _voice(voice: str) -> VoiceProfile:
     for voice_id, speaker in Qwen3TTSStreamingAdapter._SPEAKERS.items():
         if voice.casefold() == speaker.casefold():
             return VOICE_PROFILES[voice_id]
-    return VOICE_PROFILES["tom_m1"]
+    raise HTTPException(status_code=422, detail="Unsupported voice; choose Ryan, Aiden, or Serena")
 
 
 def _frame(frame_type: int, payload: bytes = b"") -> bytes:
@@ -65,7 +67,7 @@ def _auth_token() -> str:
 
 def _authorize(access_token: str | None) -> None:
     expected = _auth_token()
-    if not _auth_required():
+    if not _auth_required() and not expected:
         return
     if not expected:
         raise HTTPException(status_code=503, detail="Qwen3-TTS public API auth is not configured")
@@ -74,6 +76,17 @@ def _authorize(access_token: str | None) -> None:
 
 
 def _generate(request: Qwen3TTSRequest, adapter: Qwen3TTSStreamingAdapter) -> list[Any]:
+    # Hold the slot in the worker, not the HTTP coroutine: disconnecting a
+    # client cannot release GPU capacity while native inference is still running.
+    if not _generation_slot.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="TTS is busy; retry after generation completes")
+    try:
+        return _generate_audio(request, adapter)
+    finally:
+        _generation_slot.release()
+
+
+def _generate_audio(request: Qwen3TTSRequest, adapter: Qwen3TTSStreamingAdapter) -> list[Any]:
     style = VoiceStyle(prosody_plan={"temperature": request.temperature, "top_p": request.top_p})
     if request.instruct.strip():
         style = style.model_copy(update={"prosody_plan": {**style.prosody_plan, "instruction": request.instruct.strip()}})
@@ -108,13 +121,15 @@ async def _stream_qwen3(request: Qwen3TTSRequest, access_token: str | None = Non
             "x-tom-channels": "1",
             "x-tom-stream-protocol": "TOM-QWEN3-PCM/1; frame=type:u8,length:u32be; end=2; error=1",
             "cache-control": "no-store",
+            "x-tom-generation-mode": "buffered-inference",
         },
     )
 
 
 @router.post("/stream")
-async def stream_qwen3(request: Qwen3TTSRequest) -> StreamingResponse:
-    return await _stream_qwen3(request)
+async def stream_qwen3(request: Qwen3TTSRequest, authorization: str | None = Header(default=None)) -> StreamingResponse:
+    token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
+    return await _stream_qwen3(request, token)
 
 
 @router.post("/stream/{access_token}")
@@ -137,7 +152,7 @@ async def qwen3_health() -> dict[str, str]:
         )
     adapter = _adapter_for_service()
     try:
-        adapter._load()
+        await asyncio.to_thread(adapter._load)
     except RuntimeError as exc:
         detail = str(exc)
         if detail.startswith("MODEL_NOT_DOWNLOADED"):
@@ -158,5 +173,6 @@ async def qwen3_health() -> dict[str, str]:
         "audio_format": "pcm_s16le",
         "sample_rate": str(adapter.SAMPLE_RATE),
         "channels": "1",
+        "generation_mode": "buffered-inference",
         "public_auth": "required" if _auth_required() else "disabled",
     }

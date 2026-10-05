@@ -12,11 +12,12 @@ from importlib.metadata import version as package_version
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from tom.android_tools import register_android_tools
+from tom.api.auth import authorize_operator_socket
 from tom.api.bridge_server import install_android_bridge
 from tom.api.device_ws import build_device_websocket
 from tom.api.voice_ws import build_live_voice_websocket
@@ -31,18 +32,19 @@ from tom.device_capabilities import DeviceCapabilityRegistry
 from tom.integration_registry import status as integration_status
 from tom.live_events import LiveEventStream
 from tom.live_task_bridge import LiveTaskBridge
+from tom.local_tools import register_workspace_tools
 from tom.memory import MemoryStore
 from tom.models import AgentRequest, AgentResponse
 from tom.perception.pipeline import MultimodalRuntime
 from tom.perception.vision_runtime import OpenAICompatibleVisionAdapter, VisionRuntimeConfig
 from tom.permissions import Decision, PermissionPolicy
-from tom.planner import ModelPlanner, RulePlanner
+from tom.planner import ModelPlanner, Planner, RulePlanner
 from tom.production import ProductionReadiness
 from tom.providers import OpenAICompatibleLLM
 from tom.public_api_catalog import catalog as public_api_catalog
 from tom.public_api_catalog import executable_catalog
 from tom.public_api_tools import register_public_api_tools
-from tom.response import FriendlyFallback, ModelResponder
+from tom.response import FriendlyFallback, ModelResponder, Responder
 from tom.runtime import AgentRuntime
 from tom.tools import ToolRegistry
 from tom.voice.director import ConversationSignals
@@ -86,17 +88,36 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="TOM Agent Runtime", version=APP_VERSION, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def protect_local_api(request, call_next):
+    # Binding to localhost is not authentication. An explicitly configured token
+    # is honored in development too; production fails closed without one.
+    if request.url.path.startswith("/v1/") and not request.url.path.startswith("/v1/tts/qwen3/") and request.url.path != "/v1/integrations/google/callback":
+        token = os.getenv("TOM_API_TOKEN", "").strip()
+        if settings.environment == "production" and not token:
+            return JSONResponse(status_code=503, content={"detail": "Configure TOM_API_TOKEN before exposing the API"})
+        if token and not hmac.compare_digest(request.headers.get("authorization", ""), f"Bearer {token}"):
+            return JSONResponse(status_code=401, content={"detail": "A valid API bearer token is required"})
+    return await call_next(request)
+
 profile = CompanionProfile()
 tools = ToolRegistry({})
+register_workspace_tools(tools)
 credentials = CredentialManager(settings.data_dir)
 device_capabilities = DeviceCapabilityRegistry.android_baseline()
 fallback_planner = RulePlanner()
 fallback_responder = FriendlyFallback()
 readiness = ProductionReadiness()
 
+llm: OpenAICompatibleLLM | None
+planner: Planner
+responder: Responder
+
 if settings.llm_enabled:
-    llm = OpenAICompatibleLLM(settings.llm_base_url, settings.llm_api_key, settings.llm_model)
-    planner = ModelPlanner(llm, fallback_planner)
+    llm = OpenAICompatibleLLM(settings.llm_base_url, settings.llm_api_key, settings.llm_model, timeout_seconds=float(os.getenv("TOM_LLM_TIMEOUT_SECONDS", "60")))
+    planner = ModelPlanner(llm, fallback_planner, allow_fallback=os.getenv("TOM_PLANNER_ALLOW_FALLBACK", "false").lower() == "true")
     responder = ModelResponder(llm, fallback_responder)
 else:
     llm = None
@@ -149,7 +170,7 @@ async def on_core_result(result: dict) -> None:
                     break
 
 
-core_receiver = CoreBridgeReceiver(vision_runtime, on_core_result) if vision_runtime is not None else None
+core_receiver = CoreBridgeReceiver(vision_runtime, on_result=on_core_result) if vision_runtime is not None else None
 android_bridge = install_android_bridge(app, event_stream=live_events, core_receiver=core_receiver)
 register_android_tools(tools, android_bridge)
 browser_runtime = register_browser_tools(tools)
@@ -227,7 +248,15 @@ async def agent(request: AgentRequest) -> AgentResponse:
     High-impact steps are returned in ``pending_approval`` instead of being
     executed; approve them with ``POST /v1/agent/approve``.
     """
-    return await runtime.handle(request)
+    if any(key.startswith("_") or key == "approved" for key in request.context):
+        raise HTTPException(status_code=422, detail="Internal runtime context fields are not accepted")
+    try:
+        return await runtime.handle(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        logger.exception("agent request failed conversation_id=%s", request.conversation_id)
+        raise HTTPException(status_code=503, detail={"code": "AGENT_UNAVAILABLE", "message": str(exc)}) from exc
 
 
 @app.post("/v1/agent/approve")
@@ -412,6 +441,8 @@ async def capabilities() -> dict:
 
 @app.websocket("/v1/events/ws")
 async def live_events_websocket(websocket: WebSocket) -> None:
+    if not await authorize_operator_socket(websocket):
+        return
     await websocket.accept()
     task_id = websocket.query_params.get("task_id")
     try:

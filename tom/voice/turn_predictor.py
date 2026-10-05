@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -16,8 +17,8 @@ class LearnedTurnPredictor:
 
     def __init__(self) -> None:
         self.model_path = os.getenv("TOM_TURN_MODEL_PATH", "").strip()
-        self._session = None
-        self._input_name = None
+        self._session: Any = None
+        self._input_name: str | None = None
 
     @property
     def configured(self) -> bool:

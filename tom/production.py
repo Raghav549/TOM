@@ -48,9 +48,8 @@ class ProductionReadiness:
         llm = bool(
             not llm_enabled
             or (
-                os.getenv("TOM_LLM_BASE_URL", "https://api-inference.modelscope.cn/v1").strip()
-                and os.getenv("TOM_LLM_MODEL", "Qwen/Qwen3-8B").strip()
-                and os.getenv("TOM_LLM_API_KEY", "").strip()
+                os.getenv("TOM_LLM_BASE_URL", "http://127.0.0.1:11434/v1").strip()
+                and os.getenv("TOM_LLM_MODEL", "qwen3:4b").strip()
             )
         )
         tts_engine = os.getenv("TOM_TTS_ENGINE", "qwen3").strip().lower()
@@ -79,6 +78,8 @@ class ProductionReadiness:
             CapabilityCheck("device_auth", device_secret, "device secret store configured" if device_secret else "configure secure device secrets", "device_auth" in required),
             CapabilityCheck("persistent_data", True, f"data directory: {data_dir}", "persistent_data" in required),
         ]
+        known = {item.name for item in items}
+        items.extend(CapabilityCheck(name, False, "Unknown required capability", True) for name in required - known)
         return items
 
     def report(self, *, device_sessions: Any = None) -> dict[str, object]:
@@ -128,11 +129,11 @@ class ProductionReadiness:
     async def _probe_llm(self, checks: dict[str, CapabilityCheck]) -> None:
         if not checks["model"].configured or os.getenv("TOM_LLM_ENABLED", "true").lower() != "true":
             return
-        base_url = os.getenv("TOM_LLM_BASE_URL", "https://api-inference.modelscope.cn/v1").rstrip("/")
+        base_url = os.getenv("TOM_LLM_BASE_URL", "http://127.0.0.1:11434/v1").rstrip("/")
         key = os.getenv("TOM_LLM_API_KEY", "").strip()
         headers = {"Authorization": f"Bearer {key}"} if key else {}
         request_payload = {
-            "model": os.getenv("TOM_LLM_MODEL", "Qwen/Qwen3-8B"),
+            "model": os.getenv("TOM_LLM_MODEL", "qwen3:4b"),
             "messages": [{"role": "user", "content": "Reply exactly TOM_READY"}],
             "stream": True,
             "extra_body": {"enable_thinking": False},
@@ -200,8 +201,10 @@ class ProductionReadiness:
         if checks["neural_vad"].configured:
             try:
                 from tom.voice.neural_vad import SileroStreamingVAD
-                await asyncio.to_thread(SileroStreamingVAD()._load)
-                checks["neural_vad"] = _replace_check(checks["neural_vad"], True, "Silero VAD model loaded")
+                vad = SileroStreamingVAD()
+                await asyncio.to_thread(vad._load)
+                checks["neural_vad"] = _replace_check(checks["neural_vad"], not vad._fallback,
+                    "Energy VAD fallback active; neural model unavailable" if vad._fallback else "Silero VAD model loaded")
             except Exception as exc:  # noqa: BLE001
                 checks["neural_vad"] = _replace_check(checks["neural_vad"], False, f"VAD model unavailable: {type(exc).__name__}")
         if checks["learned_turn"].configured:
@@ -211,9 +214,11 @@ class ProductionReadiness:
     async def _probe_browser(self, checks: dict[str, CapabilityCheck], browser: Any) -> None:
         if not checks["browser"].configured or browser is None:
             return
+        from tom.browser.runtime import PlaywrightBrowser
+        probe_browser = PlaywrightBrowser(headless=browser.headless) if isinstance(browser, PlaywrightBrowser) else browser
         try:
-            await browser.start()
-            await browser.close()
+            await probe_browser.start()
+            await probe_browser.close()
             checks["browser"] = _replace_check(checks["browser"], True, "Playwright browser launched and closed")
         except Exception as exc:  # noqa: BLE001
             checks["browser"] = _replace_check(checks["browser"], False, f"Playwright launch failed: {type(exc).__name__}")
