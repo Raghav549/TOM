@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -49,7 +50,7 @@ class ToolRegistry:
             tools = [tool for tool in tools if tags.intersection(tool.tags)]
         return sorted(tools, key=lambda item: item.name)
 
-    def describe(self) -> list[dict[str, Any]]:
+    def describe(self) -> builtins.list[dict[str, Any]]:
         return [
             {
                 "name": tool.name,

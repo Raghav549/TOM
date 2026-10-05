@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from tom.api.auth import authorize_operator_socket
 from tom.models import AgentRequest
 from tom.runtime import AgentRuntime
 from tom.voice.cosyvoice_stream import TTSChunk
@@ -540,6 +541,8 @@ class LiveVoiceConnection:
 def build_live_voice_websocket(runtime: AgentRuntime) -> APIRouter:
     @router.websocket("/ws")
     async def live_voice(websocket: WebSocket) -> None:
+        if not await authorize_operator_socket(websocket):
+            return
         await websocket.accept()
         try:
             connection = LiveVoiceConnection(websocket, runtime)

@@ -51,7 +51,8 @@ async def test_stream_yields_deltas_incrementally_and_sets_headers() -> None:
     assert deltas == ["Hel", "lo", " there"]
     assert seen["auth"] == "Bearer k"
     assert seen["body"]["stream"] is True
-    assert seen["body"]["extra_body"] == {"enable_thinking": False}
+    assert seen["body"]["enable_thinking"] is False
+    assert "extra_body" not in seen["body"]
     assert await llm.complete([{"role": "user", "content": "hi"}]) == "Hello there"
 
 
@@ -124,3 +125,11 @@ async def test_model_responder_does_not_append_fallback_after_partial_output() -
     responder = ModelResponder(_HalfwayLLM(), FriendlyFallback())
     chunks = [c async for c in responder.stream(user_message="hi", events=[], context={})]
     assert chunks == ["partial "]
+
+
+@pytest.mark.asyncio
+async def test_truncated_stream_is_not_a_successful_completion() -> None:
+    content = b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+    llm = _llm(lambda request: httpx.Response(200, content=content))
+    with pytest.raises(RuntimeError, match="incomplete"):
+        await llm.complete([{"role": "user", "content": "hello"}])

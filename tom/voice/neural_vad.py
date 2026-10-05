@@ -104,6 +104,8 @@ class SileroStreamingVAD:
             if self._fallback:
                 probability = self._fallback_probability(audio)
             else:
+                if self._model is None or torch is None:
+                    raise RuntimeError("Neural VAD model failed to initialize")
                 probability = float(self._model(torch.from_numpy(audio), 16_000).item())
             probabilities.append(probability)
             frame_start, frame_end = self._update_state(probability, 32)

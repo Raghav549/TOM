@@ -76,7 +76,7 @@ def _norm(value: Any) -> str:
 
 def _contains(items: Sequence[Any] | None, expected: Any) -> bool:
     wanted = _norm(expected)
-    return bool(items) and any(_norm(item) == wanted for item in items)
+    return bool(items) and any(_norm(item) == wanted for item in (items or ()))
 
 
 def _text_blob(obs: Mapping[str, Any]) -> str:

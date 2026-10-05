@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from tom.api.auth import authorize_operator_socket
 from tom.device.core_receiver import CoreBridgeReceiver
 
 router = APIRouter(prefix="/v1/device", tags=["device"])
@@ -17,6 +18,8 @@ def build_device_websocket(perception, on_plan=None) -> APIRouter:
 
     @router.websocket("/ws/multimodal")
     async def multimodal_socket(websocket: WebSocket) -> None:
+        if not await authorize_operator_socket(websocket):
+            return
         await websocket.accept()
         try:
             while True:

@@ -92,9 +92,9 @@ class FriendlyFallback(Responder):
     async def respond(self, *, user_message: str, events: list[dict[str, Any]], context: dict[str, Any]) -> str:
         if any(event.get("type") == "approval.required" for event in events):
             return "Haan bhai, next step ready hai. Kar doon?"
-        if any(event.get("type") == "tool.failed" for event in events):
+        if any(event.get("type") in {"tool.failed", "action.failed", "tool.denied"} for event in events):
             return "Bhai, ek step mein dikkat aa gayi. Main usko fix ya dobara try kar sakta hoon."
-        if any(event.get("type") == "tool.completed" for event in events):
+        if any(event.get("type") in {"tool.completed", "action.finished"} for event in events):
             return "Ho gaya bhai."
         message = user_message.strip()
         if message:

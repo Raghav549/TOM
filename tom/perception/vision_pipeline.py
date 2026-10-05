@@ -30,8 +30,8 @@ class VisionPipeline:
         for raw in chunks:
             reassembler.add(ScreenshotChunk(
                 transfer_id=str(raw["transfer_id"]),
-                index=int(raw["index"]),
-                total=int(raw["total"]),
+                index=int(str(raw["index"])),
+                total=int(str(raw["total"])),
                 sha256=str(raw["sha256"]),
                 data_b64=str(raw["data_b64"]),
             ))

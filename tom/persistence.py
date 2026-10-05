@@ -11,8 +11,8 @@ class SupabaseTaskStore:
     """Durable task/action/event persistence for crash and reconnect recovery."""
 
     def __init__(self, url: str | None = None, service_key: str | None = None) -> None:
-        self.url = (url or os.getenv("TOM_SUPABASE_URL", "")).rstrip("/")
-        self.service_key = service_key or os.getenv("TOM_SUPABASE_SERVICE_ROLE_KEY", "")
+        self.url = (url or os.getenv("TOM_SUPABASE_URL") or "").rstrip("/")
+        self.service_key = service_key or os.getenv("TOM_SUPABASE_SERVICE_ROLE_KEY") or ""
         if not self.url or not self.service_key:
             raise RuntimeError("TOM_SUPABASE_URL and TOM_SUPABASE_SERVICE_ROLE_KEY are required")
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from .cosyvoice_stream import TTSChunk
 from .models import Language, VoiceProfile, VoiceStyle
@@ -35,10 +35,10 @@ class IndicParlerStreamingAdapter:
     }
 
     def __init__(self) -> None:
-        self._model = None
-        self._tokenizer = None
-        self._description_tokenizer = None
-        self._device = None
+        self._model: Any = None
+        self._tokenizer: Any = None
+        self._description_tokenizer: Any = None
+        self._device: str | None = None
 
     def _load(self) -> None:
         if self._model is not None:
@@ -52,7 +52,7 @@ class IndicParlerStreamingAdapter:
                 "Indic Parler-TTS dependencies are missing. Install the TOM voice-indic extra."
             ) from exc
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
-        dtype = torch.float16
+        dtype = torch.float16 if self._device == "cuda" else torch.float32
         self._model = ParlerTTSForConditionalGeneration.from_pretrained(
             self.MODEL_ID, torch_dtype=dtype
         ).to(self._device)

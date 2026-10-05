@@ -120,12 +120,13 @@ class AndroidBridgeHub:
         async with self.lock:
             self._waiters[key] = future
         await self.emit("action.requested", {"device_id": device_id, "action": action, "action_id": action_id}, task_id=task_id)
+        session = self.sessions.get(device_id)
         message = {
             "type": "ACTION_REQUEST",
             "message_id": secrets.token_urlsafe(12),
             "sequence": 0,
             "device_id": device_id,
-            "session_id": (self.sessions.get(device_id).session_id if self.sessions.get(device_id) else ""),
+            "session_id": (session.session_id if session else ""),
             "payload": {
                 "task_id": task_id,
                 "action_id": action_id,

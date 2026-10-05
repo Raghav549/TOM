@@ -51,11 +51,12 @@ class OpenAICompatibleLLM:
             "stream": True,
             **kwargs,
         }
-        extra_body = body.get("extra_body")
+        extra_body = body.pop("extra_body", None)
         if not isinstance(extra_body, dict):
             extra_body = {}
         extra_body.setdefault("enable_thinking", False)
-        body["extra_body"] = extra_body
+        # extra_body is an SDK argument, not a wire-protocol field.
+        body.update(extra_body)
 
         timeout = httpx.Timeout(
             self.timeout_seconds,
@@ -87,6 +88,19 @@ class OpenAICompatibleLLM:
         return content if isinstance(content, str) else ""
 
     async def stream(self, messages: list[Message], **kwargs: Any) -> AsyncIterator[str]:
+        # A read timeout alone can be defeated by an endless trickle of bytes.
+        try:
+            async with asyncio.timeout(self.timeout_seconds * (self.max_retries + 1)):
+                size = 0
+                async for delta in self._stream(messages, **kwargs):
+                    size += len(delta)
+                    if size > 1_000_000:
+                        raise RuntimeError("LLM response exceeds the output limit")
+                    yield delta
+        except TimeoutError as exc:
+            raise RuntimeError("LLM total request deadline exceeded") from exc
+
+    async def _stream(self, messages: list[Message], **kwargs: Any) -> AsyncIterator[str]:
         """Yield content deltas as the provider streams them.
 
         Retries only happen before the first delta is emitted; once text has
@@ -98,6 +112,7 @@ class OpenAICompatibleLLM:
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
             emitted = False
+            finished = False
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client, client.stream(
                     "POST",
@@ -122,14 +137,17 @@ class OpenAICompatibleLLM:
                     async for line in response.aiter_lines():
                         delta = self._delta_from_sse_line(line)
                         if delta is None:
+                            finished = True
                             break
                         if delta:
                             emitted = True
                             yield delta
+                if emitted and not finished:
+                    raise RuntimeError("LLM stream ended before [DONE]; response is incomplete")
                 if not emitted:
                     raise RuntimeError("LLM provider returned no text content")
                 return
-            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc
                 if emitted or attempt >= self.max_retries:
                     break

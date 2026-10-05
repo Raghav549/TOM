@@ -22,7 +22,9 @@ jobs:
       - run: pip install -e '.[dev]'
       # Lint must fail on violations instead of silently rewriting the checkout.
       - run: ruff check .
+      - run: mypy tom --ignore-missing-imports
       - run: pytest -q
+      - run: python -m build
       # Readiness report must build without any provider configured.
       - run: python scripts/validate_production.py
         env:
