@@ -1,6 +1,15 @@
 # TOM
 
+[![CI](https://github.com/Raghav549/TOM/actions/workflows/ci.yml/badge.svg)](https://github.com/Raghav549/TOM/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
+> A local-first, safety-conscious multimodal AI agent runtime for work that spans planning, tools, browsers, devices, voice, and verified outcomes.
+
 **TOM (Task-Oriented Multimodal)** is an open-source-first personal AI agent runtime designed to understand requests, plan multi-step work, use tools, remember context, operate browsers/devices through explicit adapters, and require approval for high-impact actions.
+
+**Start here:** [Quick start](Quickstart.md) · [Production path](docs/PRODUCTION.md) · [Contributing](CONTRIBUTING.md) · [Report a security issue](SECURITY.md)
+
+If TOM is useful to you, please star the repository, share a concrete use case, or contribute a small improvement. Real-world feedback helps prioritize the next safe, useful capability.
 
 ## Design principles
 - Open-source-first model/provider adapters; no model lock-in.
