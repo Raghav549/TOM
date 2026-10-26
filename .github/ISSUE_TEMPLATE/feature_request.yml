@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a focused improvement to TOM.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        TOM values local-first operation, explicit permissions, and truthful capability reporting. A strong proposal explains how it fits those principles.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      placeholder: "I need to … because …"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      placeholder: "TOM could …"
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Permissions and safety considerations
+      description: Identify any external side effects, data access, or approvals the change would need.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and did not include secrets or private information.
+          required: true
